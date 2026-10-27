@@ -266,6 +266,14 @@ Without a collider the object is visual only. Isaac cameras, lidar and depth cam
 
 `--collider-mesh FILE` gives a splat bundle a collider at build time. FILE is a triangle mesh of the same capture, `.obj` or `.ply`, in the source stage frame of the export, for example a surface reconstructed from the training views. Building that mesh is outside this tool. It is registered with the same `--matrix` or `--points` as the Gaussians and cropped by the same box: a triangle stays only with all its corners inside the crop and none inside a `--drop` box, and the verb prints how many it keeps. The kept triangles are baked into `<name>.usda` as described under [Colliders](#colliders). The bundle has no SDF of its own, so the verb also writes `<name>.sdf/<name>.sdf` holding only the collision: Gazebo then has the obstacle without the capture.
 
+Without a mesh, `--generate-collider` builds the collider from the kept Gaussians instead. It needs `pip install './src[collider]'` (scikit-image, fast-simplification, scipy, torch) and runs on a CUDA GPU when torch sees one, otherwise on the CPU, which takes minutes.
+
+```sh
+arena-assets splat <export>.usdz ./assets/Common/Object/<name> --object --matrix '<16 numbers>' --width 1.2 --depth 1.2 --height 1.1 --generate-collider
+```
+
+Virtual cameras render depth images of the splat, in rings at robot sensor heights (0.3 and 1.0 m), on a dome above and, in a second pass, inside the free space found, for example under a table. A pixel sees the surface where the Gaussians along its ray have blocked half the light, which is where Isaac's lidar and depth cameras see it. The images are fused on a 1 cm voxel grid where the cameras vote, so thin, semi-transparent parts that only some rays see stay, and space no camera saw through stays solid. The collider stands 1 cm outside the surface, reaches down to the floor and is baked like an attached mesh; `annotation.yaml` records the settings under `collider_source:`. Running `splat` again builds it again, and `arena-assets collider <bundle> --remove` takes it out.
+
 ### Colliders
 
 An object's `annotation.yaml` may name a collider mesh under `collider:`. It replaces the object's collision in every model the bundle holds, while cameras, lidar and depth cameras keep seeing the visual model:
