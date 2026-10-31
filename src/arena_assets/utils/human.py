@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 import attrs
@@ -13,6 +14,7 @@ THIGH_JOINTS = ("LeftUpLeg", "RightUpLeg")  # cmu_mb rig, the hip joints the thi
 LEG_CHAINS = (("LeftUpLeg", "LeftLeg", "LeftFoot"), ("RightUpLeg", "RightLeg", "RightFoot"))  # cmu_mb rig, hip, knee, ankle
 ARM_CHAINS = (("LeftArm", "LeftForeArm", "LeftHand"), ("RightArm", "RightForeArm", "RightHand"))  # cmu_mb rig, shoulder, elbow, wrist
 HEAD_JOINT = "Head"  # cmu_mb rig, the base of the skull
+BIND_STANCE = frozenset(f"{side}{bone}" for side in ("Left", "Right") for bone in ("UpLeg", "Leg", "Foot", "ToeBase"))  # cmu_mb rig, the leg chain the neutral stance takes from the skin
 SEATED_FLEXIONS = tuple(float(np.radians(degrees)) for degrees in range(0, 141, 10))  # rad, hip flexions the seated clearance is measured at
 BUTTOCK_BAND = 0.12  # m below the hip joints
 BUTTOCK_REACH = 0.3  # m behind the hip joints
@@ -61,12 +63,13 @@ class Proportions:
 
 @attrs.define(frozen=True)
 class Skin:
-    """Bind pose of a skinned mesh: joint positions by name, vertex positions, the joint that moves each vertex most and every joint's per-vertex weight."""
+    """Bind pose of a skinned mesh: joint positions by name, vertex positions, the joint that moves each vertex most, every joint's per-vertex weight and its world rotation."""
 
     joints: dict[str, np.ndarray]
     points: np.ndarray
     dominant: list[str]
     weights: dict[str, np.ndarray] = attrs.field(factory=dict)
+    frames: dict[str, np.ndarray] = attrs.field(factory=dict)
 
 
 def _rotation(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -167,16 +170,25 @@ def read_skin(dae: Path) -> Skin:
         return np.array((element.findtext(f"{ns}float_array") or "").split(), dtype=float).reshape(-1, stride)
 
     joints: dict[str, np.ndarray] = {}
+    frames: dict[str, np.ndarray] = {}
     points: list[np.ndarray] = []
     dominant: list[str] = []
     influences: list[dict[str, float]] = []
     for skin in root.iter(f"{ns}skin"):
         bind_shape = np.array((skin.findtext(f"{ns}bind_shape_matrix") or "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1").split(), dtype=float).reshape(4, 4)
         inputs = {element.get("semantic"): element.get("source") for element in skin.iterfind(f"{ns}joints/{ns}input")}
-        names = (source(inputs.get("JOINT")).findtext(f"{ns}Name_array") or "").split()
+        joint_source = source(inputs.get("JOINT"))
+        named = joint_source.findtext(f"{ns}Name_array")
+        if named is not None:
+            names = named.split()
+        else:
+            refs = (joint_source.findtext(f"{ns}IDREF_array") or "").split()
+            names = [by_id[ref].get("name") or ref if ref in by_id else ref for ref in refs]
         inverse_binds = floats(inputs.get("INV_BIND_MATRIX")).reshape(-1, 4, 4)
         for name, inverse_bind in zip(names, inverse_binds, strict=True):
-            joints.setdefault(name, np.linalg.inv(inverse_bind)[:3, 3])
+            bind = np.linalg.inv(inverse_bind)
+            joints.setdefault(name, bind[:3, 3])
+            frames.setdefault(name, _orthonormal(bind[:3, :3]))
 
         weights_element = skin.find(f"{ns}vertex_weights")
         if weights_element is None:
@@ -209,4 +221,102 @@ def read_skin(dae: Path) -> Skin:
     for index, influence in enumerate(influences):
         for name, weight in influence.items():
             by_joint[name][index] = weight
-    return Skin(joints=joints, points=merged, dominant=dominant, weights=by_joint)
+    return Skin(joints=joints, points=merged, dominant=dominant, weights=by_joint, frames=frames)
+
+
+def _orthonormal(linear: np.ndarray) -> np.ndarray:
+    u, _, vt = np.linalg.svd(linear)
+    return u @ vt
+
+
+def _swing(direction: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Shortest rotation turning direction onto target."""
+    a = direction / np.linalg.norm(direction)
+    b = target / np.linalg.norm(target)
+    axis = np.cross(a, b)
+    sin = float(np.linalg.norm(axis))
+    if sin < 1e-12:
+        return np.eye(3)
+    return _rotation(axis / sin, float(np.arctan2(sin, a @ b)))
+
+
+def _scene_nodes(root: ET.Element, ns: str, dae: Path) -> list[tuple[int, np.ndarray, str | None, bool]]:
+    """Scene nodes parent first as (parent, local transform, joint name, topmost joint of its branch)."""
+    nodes: list[tuple[int, np.ndarray, str | None, bool]] = []
+
+    def descend(node: ET.Element, parent: int, below_root: bool) -> None:
+        matrix = node.findtext(f"{ns}matrix")
+        local = np.eye(4) if matrix is None else np.array(matrix.split(), dtype=float).reshape(4, 4)
+        joint = node.get("type") == "JOINT"
+        if joint and matrix is None:
+            raise ValueError(f"{dae}: joint node {node.get('id')} has no matrix")
+        nodes.append((parent, local, (node.get("sid") or node.get("id")) if joint else None, joint and not below_root))
+        index = len(nodes) - 1
+        for child in node.iterfind(f"{ns}node"):
+            descend(child, index, below_root or joint)
+
+    scene = root.find(f"{ns}library_visual_scenes/{ns}visual_scene")
+    if scene is None:
+        raise ValueError(f"{dae}: no visual scene")
+    for node in scene.iterfind(f"{ns}node"):
+        descend(node, -1, False)
+    return nodes
+
+
+def _first_keys(clip: Path) -> dict[str, np.ndarray]:
+    """Local transform of every joint a COLLADA clip keys, at its first key."""
+    root = ET.parse(clip).getroot()
+    ns = root.tag[: root.tag.index("}") + 1]
+    by_id = {element.get("id"): element for element in root.iter() if element.get("id")}
+    keys: dict[str, np.ndarray] = {}
+    for channel in root.iter(f"{ns}channel"):
+        joint, _, attribute = (channel.get("target") or "").partition("/")
+        if attribute != "transform":
+            continue
+        sampler = by_id[(channel.get("source") or "").lstrip("#")]
+        output = next(element.get("source") for element in sampler.iterfind(f"{ns}input") if element.get("semantic") == "OUTPUT")
+        values = by_id[(output or "").lstrip("#")].findtext(f"{ns}float_array") or ""
+        keys[joint] = np.array(values.split()[:16], dtype=float).reshape(4, 4)
+    return keys
+
+
+def _worlds(nodes: list[tuple[int, np.ndarray, str | None, bool]], local: np.ndarray) -> np.ndarray:
+    out = local.copy()
+    for index, (parent, _, _, _) in enumerate(nodes):
+        if parent >= 0:
+            out[index] = out[parent] @ local[index]
+    return out
+
+
+def neutral_locals(skin: Path, clip: Path | None, leg_chains: Sequence[tuple[str, str, str]] = LEG_CHAINS, bind_stance: Collection[str] = BIND_STANCE) -> tuple[list[tuple[int, np.ndarray, str | None, bool]], np.ndarray]:
+    """Scene nodes and their local transforms in the neutral stance: the clip's first frame, root and `bind_stance` bones from the skin, each hip, knee, ankle chain's thigh and shin hanging straight down, feet keeping their world rotation."""
+    root = ET.parse(skin).getroot()
+    nodes = _scene_nodes(root, root.tag[: root.tag.index("}") + 1], skin)
+    held = {joint for _, _, joint, topmost in nodes if topmost} | set(bind_stance)
+    keys = {} if clip is None else {joint: matrix for joint, matrix in _first_keys(clip).items() if joint not in held}
+    local = np.stack([keys.get(joint, rest) if joint is not None else rest for _, rest, joint, _ in nodes])
+    index = {joint: i for i, (_, _, joint, _) in enumerate(nodes) if joint is not None}
+
+    def set_world(bone: int, rotation: np.ndarray) -> None:
+        parent = nodes[bone][0]
+        above = _orthonormal(_worlds(nodes, local)[parent, :3, :3]) if parent >= 0 else np.eye(3)
+        local[bone, :3, :3] = float(np.cbrt(np.linalg.det(local[bone, :3, :3]))) * above.T @ rotation
+
+    down = np.array([0.0, 0.0, -1.0])
+    for chain in leg_chains:
+        if not all(name in index for name in chain):
+            continue
+        thigh, shin, foot = (index[name] for name in chain)
+        foot_world = _orthonormal(_worlds(nodes, local)[foot, :3, :3])
+        for bone, child in ((thigh, shin), (shin, foot)):
+            world = _worlds(nodes, local)
+            set_world(bone, _swing(world[child, :3, 3] - world[bone, :3, 3], down) @ _orthonormal(world[bone, :3, :3]))
+        set_world(foot, foot_world)
+    return nodes, local
+
+
+def read_neutral(skin: Path, clip: Path | None, leg_chains: Sequence[tuple[str, str, str]] = LEG_CHAINS, bind_stance: Collection[str] = BIND_STANCE) -> dict[str, np.ndarray]:
+    """World rotation of every joint in the neutral stance."""
+    nodes, local = neutral_locals(skin, clip, leg_chains, bind_stance)
+    world = _worlds(nodes, local)
+    return {joint: _orthonormal(world[index, :3, :3]) for index, (_, _, joint, _) in enumerate(nodes) if joint is not None}
