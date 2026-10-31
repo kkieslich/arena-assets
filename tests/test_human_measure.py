@@ -4,7 +4,7 @@ import pytest
 
 from arena_assets.impl import Face
 from arena_assets.impl.build.HumanDatabaseBuilder import HumanAnnotation, measure_body
-from arena_assets.utils.human import Legs, PelvisClearance, Skin, legs, pelvis_clearance, proportions, read_skin, seated_clearance
+from arena_assets.utils.human import Legs, PelvisClearance, Skin, legs, neutral_locals, pelvis_clearance, proportions, read_neutral, read_skin, seated_clearance
 
 
 def rigid(dominant: list[str]) -> dict[str, np.ndarray]:
@@ -115,6 +115,76 @@ def test_read_skin_takes_joints_from_inverse_binds_and_points_from_the_bind_shap
     assert skin.dominant == ["Hips", "Hips", "LeftUpLeg"]
     assert skin.weights["Hips"] == pytest.approx([1.0, 0.7, 0.0])
     assert skin.weights["LeftUpLeg"] == pytest.approx([0.0, 0.3, 1.0])
+
+
+def test_read_skin_takes_each_joint_rotation_from_its_scaled_inverse_bind(tmp_path):
+    turned = DAE.replace("1 0 0 0  0 1 0 0  0 0 1 -0.9  0 0 0 1", "0 0.5 0 0  -0.5 0 0 0  0 0 0.5 -0.45  0 0 0 1")
+    (tmp_path / "body.dae").write_text(turned)
+    skin = read_skin(tmp_path / "body.dae")
+    assert skin.joints["Hips"] == pytest.approx([0.0, 0.0, 0.9])
+    assert skin.frames["Hips"] == pytest.approx(np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    assert skin.frames["LeftUpLeg"] == pytest.approx(np.eye(3))
+
+
+def test_read_skin_names_idref_joints_after_their_scene_nodes(tmp_path):
+    referenced = DAE.replace('<Name_array id="ja" count="2">Hips LeftUpLeg</Name_array>', '<IDREF_array id="ja" count="2">rig_Hips LeftUpLeg</IDREF_array>').replace(
+        "</library_controllers>", '</library_controllers>\n  <library_visual_scenes><visual_scene id="scene"><node id="rig_Hips" name="Hips" type="JOINT"/></visual_scene></library_visual_scenes>'
+    )
+    (tmp_path / "body.dae").write_text(referenced)
+    skin = read_skin(tmp_path / "body.dae")
+    assert set(skin.joints) == {"Hips", "LeftUpLeg"}
+    assert skin.joints["Hips"] == pytest.approx([0.0, 0.0, 0.9])
+    assert skin.dominant == ["Hips", "Hips", "LeftUpLeg"]
+
+
+SCENE = """<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <library_visual_scenes><visual_scene id="scene">
+    <node id="Hips" sid="Hips" type="JOINT"><matrix sid="transform">1 0 0 0  0 1 0 0  0 0 1 0.9  0 0 0 1</matrix>
+      <node id="LeftUpLeg" sid="LeftUpLeg" type="JOINT"><matrix sid="transform">1 0 0 0  0 1 0 0.1  0 0 1 0  0 0 0 1</matrix>
+        <node id="LeftLeg" sid="LeftLeg" type="JOINT"><matrix sid="transform">1 0 0 0.1  0 1 0 0.05  0 0 1 -0.4  0 0 0 1</matrix>
+          <node id="LeftFoot" sid="LeftFoot" type="JOINT"><matrix sid="transform">0 0 1 -0.05  0 1 0 0.05  -1 0 0 -0.4  0 0 0 1</matrix></node>
+        </node>
+      </node>
+      <node id="Spine" sid="Spine" type="JOINT"><matrix sid="transform">1 0 0 0  0 1 0 0  0 0 1 0.2  0 0 0 1</matrix></node>
+    </node>
+  </visual_scene></library_visual_scenes>
+</COLLADA>
+"""
+
+CLIP = """<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><library_animations>
+  <animation id="spine"><source id="i"><float_array id="ia" count="1">0</float_array></source>
+    <source id="o"><float_array id="oa" count="32">0 -1 0 0  1 0 0 0  0 0 1 0.2  0 0 0 1  1 0 0 0  0 1 0 0  0 0 1 0.2  0 0 0 1</float_array></source>
+    <sampler id="s"><input semantic="INPUT" source="#i"/><input semantic="OUTPUT" source="#o"/></sampler><channel source="#s" target="Spine/transform"/></animation>
+  <animation id="leg"><source id="i2"><float_array id="ib" count="1">0</float_array></source>
+    <source id="o2"><float_array id="ob" count="16">0 -1 0 0  1 0 0 0  0 0 1 0  0 0 0 1</float_array></source>
+    <sampler id="s2"><input semantic="INPUT" source="#i2"/><input semantic="OUTPUT" source="#o2"/></sampler><channel source="#s2" target="LeftLeg/transform"/></animation>
+</library_animations></COLLADA>
+"""
+
+
+def test_neutral_takes_the_clip_first_frame_and_keeps_the_leg_chain_from_the_skin(tmp_path):
+    (tmp_path / "skin.dae").write_text(SCENE)
+    (tmp_path / "clip.dae").write_text(CLIP)
+    neutral = read_neutral(tmp_path / "skin.dae", tmp_path / "clip.dae")
+    assert neutral["Spine"] == pytest.approx(np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    assert neutral["Hips"] == pytest.approx(np.eye(3))
+
+
+def test_neutral_hangs_thigh_and_shin_straight_down_and_keeps_the_foot_world_rotation(tmp_path):
+    (tmp_path / "skin.dae").write_text(SCENE)
+    nodes, local = neutral_locals(tmp_path / "skin.dae", None)
+    index = {joint: i for i, (_, _, joint, _) in enumerate(nodes)}
+    worlds = {name: local[index["Hips"]] @ local[index["LeftUpLeg"]] for name in ("LeftUpLeg",)}
+    worlds["LeftLeg"] = worlds["LeftUpLeg"] @ local[index["LeftLeg"]]
+    worlds["LeftFoot"] = worlds["LeftLeg"] @ local[index["LeftFoot"]]
+    hip, knee, ankle = (worlds[name][:3, 3] for name in ("LeftUpLeg", "LeftLeg", "LeftFoot"))
+    assert (knee - hip)[:2] == pytest.approx([0.0, 0.0], abs=1e-9)
+    assert (ankle - knee)[:2] == pytest.approx([0.0, 0.0], abs=1e-9)
+    assert np.linalg.norm(knee - hip) == pytest.approx(np.linalg.norm([0.1, 0.05, 0.4]))
+    bind_foot = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    assert worlds["LeftFoot"][:3, :3] == pytest.approx(bind_foot, abs=1e-9)
 
 
 def test_legs_run_from_the_pelvis_through_both_leg_chains_to_the_soles():
