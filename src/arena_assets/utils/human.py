@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 import attrs
@@ -287,11 +288,11 @@ def _worlds(nodes: list[tuple[int, np.ndarray, str | None, bool]], local: np.nda
     return out
 
 
-def neutral_locals(skin: Path, clip: Path | None) -> tuple[list[tuple[int, np.ndarray, str | None, bool]], np.ndarray]:
-    """Scene nodes and their local transforms in the neutral stance: the clip's first frame, root and leg chain from the skin, thighs and shins hanging straight down, feet keeping their world rotation."""
+def neutral_locals(skin: Path, clip: Path | None, leg_chains: Sequence[tuple[str, str, str]] = LEG_CHAINS, bind_stance: Collection[str] = BIND_STANCE) -> tuple[list[tuple[int, np.ndarray, str | None, bool]], np.ndarray]:
+    """Scene nodes and their local transforms in the neutral stance: the clip's first frame, root and `bind_stance` bones from the skin, each hip, knee, ankle chain's thigh and shin hanging straight down, feet keeping their world rotation."""
     root = ET.parse(skin).getroot()
     nodes = _scene_nodes(root, root.tag[: root.tag.index("}") + 1], skin)
-    held = {joint for _, _, joint, topmost in nodes if topmost} | BIND_STANCE
+    held = {joint for _, _, joint, topmost in nodes if topmost} | set(bind_stance)
     keys = {} if clip is None else {joint: matrix for joint, matrix in _first_keys(clip).items() if joint not in held}
     local = np.stack([keys.get(joint, rest) if joint is not None else rest for _, rest, joint, _ in nodes])
     index = {joint: i for i, (_, _, joint, _) in enumerate(nodes) if joint is not None}
@@ -302,7 +303,7 @@ def neutral_locals(skin: Path, clip: Path | None) -> tuple[list[tuple[int, np.nd
         local[bone, :3, :3] = float(np.cbrt(np.linalg.det(local[bone, :3, :3]))) * above.T @ rotation
 
     down = np.array([0.0, 0.0, -1.0])
-    for chain in LEG_CHAINS:
+    for chain in leg_chains:
         if not all(name in index for name in chain):
             continue
         thigh, shin, foot = (index[name] for name in chain)
@@ -314,8 +315,8 @@ def neutral_locals(skin: Path, clip: Path | None) -> tuple[list[tuple[int, np.nd
     return nodes, local
 
 
-def read_neutral(skin: Path, clip: Path | None) -> dict[str, np.ndarray]:
+def read_neutral(skin: Path, clip: Path | None, leg_chains: Sequence[tuple[str, str, str]] = LEG_CHAINS, bind_stance: Collection[str] = BIND_STANCE) -> dict[str, np.ndarray]:
     """World rotation of every joint in the neutral stance."""
-    nodes, local = neutral_locals(skin, clip)
+    nodes, local = neutral_locals(skin, clip, leg_chains, bind_stance)
     world = _worlds(nodes, local)
     return {joint: _orthonormal(world[index, :3, :3]) for index, (_, _, joint, _) in enumerate(nodes) if joint is not None}
