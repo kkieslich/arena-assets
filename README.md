@@ -153,6 +153,10 @@ arena-assets import object gso Cole_Hardware_Hammer_Black -o ./gso
 
 Each import converts items of an upstream dataset (objects, materials, worlds, scenarios, benchmark suites, sounds, recorded episodes) into local items under the imported root, marked with an `ATTRIBUTION.yaml`. [IMPORTING.md](IMPORTING.md) documents the pipeline and every source.
 
+### Private buckets
+
+Reads are anonymous until a bucket refuses them with a 401 or 403, then they retry with a token from the `GCS_ACCESS_TOKEN` environment variable or `gcloud auth print-access-token`, in that order. Public buckets never need a token.
+
 ### Upload a built database
 
 ```sh

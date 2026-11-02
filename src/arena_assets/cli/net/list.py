@@ -7,6 +7,7 @@ def list_command(
     ctx: typer.Context,
     prefix: str = typer.Argument("", help="Prefix to list assets under"),
     children: bool = typer.Option(False, "--children", help="List immediate child directories instead of globbing for annotated assets", is_flag=True),
+    containing: str | None = typer.Option(None, "--containing", help="With --children, keep only children holding a file of this name at any depth"),
 ):
     """List available assets under a prefix in the bucket.
 
@@ -21,7 +22,7 @@ def list_command(
     from arena_assets.impl.fetch import Bucket
 
     b = Bucket(source)
-    assets = b.listchildren(prefix) if children else b.list_assets(prefix)
+    assets = b.listchildren(prefix, containing) if children else b.list_assets(prefix)
     for asset_dir in assets:
         print(asset_dir)
 

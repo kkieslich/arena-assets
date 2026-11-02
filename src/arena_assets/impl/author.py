@@ -1,25 +1,8 @@
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from arena_assets.impl.fetch import Bucket
+from arena_assets.impl.fetch import Bucket, resolve_token
 from arena_assets.utils.logging import format_file_size, get_logger, get_manager
-
-
-def resolve_token() -> str:
-    """Resolve a GCS access token from the environment or gcloud."""
-    if token := os.environ.get("GCS_ACCESS_TOKEN"):
-        return token
-    try:
-        result = subprocess.run(
-            ["gcloud", "auth", "print-access-token"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as e:
-        raise RuntimeError("No GCS access token available. Set GCS_ACCESS_TOKEN or log in with 'gcloud auth login'.") from e
-    return result.stdout.strip()
 
 
 def author_database(

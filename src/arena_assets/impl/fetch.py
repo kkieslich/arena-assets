@@ -1,5 +1,7 @@
+import http.client
 import json
 import os
+import subprocess
 import typing
 import urllib.error
 import urllib.parse
@@ -9,6 +11,22 @@ from pathlib import PurePosixPath
 
 from arena_assets.impl import ANNOTATION_NAME
 from arena_assets.utils.logging import format_file_size, get_logger, get_manager
+
+
+def resolve_token() -> str:
+    """Resolve a GCS access token from the environment or gcloud."""
+    if token := os.environ.get("GCS_ACCESS_TOKEN"):
+        return token
+    try:
+        result = subprocess.run(
+            ["gcloud", "auth", "print-access-token"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise RuntimeError("No GCS access token available. Set GCS_ACCESS_TOKEN or log in with 'gcloud auth login'.") from e
+    return result.stdout.strip()
 
 
 def outermost(assets: typing.Iterable[str]) -> list[str]:
@@ -45,6 +63,19 @@ class Bucket:
             req.add_header("Authorization", f"Bearer {self.token}")
         return req
 
+    def _open(self, url: str, **kwargs: typing.Any) -> http.client.HTTPResponse:
+        """Open *url* anonymously until the bucket refuses, then with a resolved token."""
+        try:
+            return urllib.request.urlopen(self._request(url, **kwargs))
+        except urllib.error.HTTPError as e:
+            if self.token or e.code not in (401, 403):
+                raise
+            try:
+                self.token = resolve_token()
+            except RuntimeError:
+                raise e from None
+        return urllib.request.urlopen(self._request(url, **kwargs))
+
     def listdir(self, prefix: str) -> list[dict]:
         """List all objects under a prefix using the GCS JSON API."""
         results = []
@@ -55,7 +86,7 @@ class Bucket:
         url = self._object_url("", prefix=prefix)
 
         while url:
-            resp = urllib.request.urlopen(self._request(url))
+            resp = self._open(url)
             data = json.loads(resp.read())
             results.extend(data.get("items", []))
 
@@ -70,7 +101,7 @@ class Bucket:
         if prefix:
             prefix += "/"
         url = self._object_url("", prefix=prefix, maxResults="1", fields="items(name)")
-        resp = urllib.request.urlopen(self._request(url))
+        resp = self._open(url)
         return bool(json.loads(resp.read()).get("items"))
 
     def list_assets(self, prefix: str = "") -> list[str]:
@@ -87,28 +118,40 @@ class Bucket:
         assets = []
         url = self._object_url("", **params)
         while url:
-            data = json.loads(urllib.request.urlopen(self._request(url)).read())
+            data = json.loads(self._open(url).read())
             assets.extend(os.path.dirname(item["name"]) for item in data.get("items", []))
             next_token = data.get("nextPageToken")
             url = self._object_url("", **params, pageToken=next_token) if next_token else None
         return outermost(assets)
 
-    def listchildren(self, prefix: str) -> list[str]:
+    def listchildren(self, prefix: str, containing: str | None = None) -> list[str]:
         """Immediate child prefixes under *prefix*, one API call per page.
 
         Buckets that carry no annotation sentinel (worlds, benchmark configs) are
-        enumerated by directory rather than by scanning every object.
+        enumerated by directory rather than by scanning every object. With *containing*
+        only children holding a file of that name at any depth count.
         """
         results: list[str] = []
         prefix = prefix.strip("/")
         if prefix:
             prefix += "/"
 
+        if containing:
+            glob_params = {"prefix": prefix, "matchGlob": f"**/{containing}", "fields": "items(name),nextPageToken", "maxResults": "5000"}
+            url = self._object_url("", **glob_params)
+            while url:
+                data = json.loads(self._open(url).read())
+                relative = (item["name"].removeprefix(prefix) for item in data.get("items", []))
+                results.extend(name.split("/")[0] for name in relative if "/" in name)
+                next_token = data.get("nextPageToken")
+                url = self._object_url("", **glob_params, pageToken=next_token) if next_token else None
+            return [f"{prefix}{child}" for child in dict.fromkeys(results)]
+
         params = {"prefix": prefix, "delimiter": "/"}
         url = self._object_url("", **params)
 
         while url:
-            resp = urllib.request.urlopen(self._request(url))
+            resp = self._open(url)
             data = json.loads(resp.read())
             results.extend(p.rstrip("/") for p in data.get("prefixes", []))
 
@@ -120,7 +163,7 @@ class Bucket:
     def object_exists(self, name: str) -> bool:
         """Existence of an exact object, with no sentinel assumptions."""
         try:
-            urllib.request.urlopen(self._request(self._object_url(name, fields="name"), method="HEAD"))
+            self._open(self._object_url(name, fields="name"), method="HEAD")
             return True
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -157,7 +200,7 @@ class Bucket:
         url = self._DOWNLOAD.format(endpoint=self._endpoint, bucket=self.name, obj=urllib.parse.quote(blob_name, safe=""))
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         size = 0
-        with urllib.request.urlopen(self._request(url)) as resp, open(local_path, "wb") as f:
+        with self._open(url) as resp, open(local_path, "wb") as f:
             while chunk := resp.read(1 << 20):
                 f.write(chunk)
                 size += len(chunk)
