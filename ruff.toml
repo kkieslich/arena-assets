@@ -1,6 +1,6 @@
 target-version = "py312"
 line-length = 320
-extend-exclude = ["**/setup.py"]
+extend-exclude = ["**/setup.py", "**/*.md"]
 
 [lint]
 exclude = ["**/tests/**", "**/test/**"]
