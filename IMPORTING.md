@@ -108,7 +108,7 @@ World sources write `worlds/<name>` in world format 2, which `WorldIdentifier` r
 
 ## Scenarios
 
-Scenario sources write recorded pedestrians as replay scenarios (`human:=replay`, see the [replay adapter](../task_generator/task_generator/simulators/human/README.md#replay-adapter-humanreplay)), each bringing the world it plays in where that is not imported yet. Tracks are resampled to 10 Hz with one `stays:` entry per continuous stay for a path follower.
+Scenario sources write recorded pedestrians as replay scenarios (`human:=replay`, see the [replay adapter](../arena_runtime/arena_runtime/arena_runtime/humans/README.md#replay-adapter-humanreplay)), each bringing the world it plays in where that is not imported yet. Tracks are resampled to 10 Hz with one `stays:` entry per continuous stay for a path follower.
 
 ### eth_ucy
 
