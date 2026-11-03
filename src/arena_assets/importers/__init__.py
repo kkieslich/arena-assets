@@ -184,17 +184,21 @@ def import_root() -> Path:
     imported = os.environ.get("ARENA_ASSETS_DIR_IMPORTED")
     if imported:
         return Path(imported)
-    root = os.environ.get("ARENA_ASSETS_DIR")
-    if not root:
-        raise RuntimeError("neither ARENA_ASSETS_DIR_IMPORTED nor ARENA_ASSETS_DIR is set, pass an explicit target dir")
-    return Path(root) / "_imported"
+    from arena_assets.impl.fetch import assets_root
+
+    root = assets_root()
+    if root is None:
+        raise RuntimeError("none of ARENA_ASSETS_DIR_IMPORTED, ARENA_ASSETS_DIR and ARENA_DATA_DIR is set, pass an explicit target dir")
+    return root / "_imported"
 
 
 def default_cache(name: str) -> Path:
-    root = os.environ.get("ARENA_ASSETS_DIR")
-    if not root:
-        raise RuntimeError("ARENA_ASSETS_DIR is not set, pass an explicit cache dir")
-    return Path(root) / ".import" / name
+    from arena_assets.impl.fetch import assets_root
+
+    root = assets_root()
+    if root is None:
+        raise RuntimeError("neither ARENA_ASSETS_DIR nor ARENA_DATA_DIR is set, pass an explicit cache dir")
+    return root / ".import" / name
 
 
 class ImporterRegistry:

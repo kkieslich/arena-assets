@@ -1,21 +1,70 @@
+import contextlib
+import gzip
+import hashlib
 import http.client
 import json
 import os
 import subprocess
+import threading
+import time
 import typing
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from arena_assets.impl import ANNOTATION_NAME
 from arena_assets.utils.logging import format_file_size, get_logger, get_manager
 
+DEFAULT_URL = "https://storage.arena-rosnav.org"
+DEFAULT_SOURCE = "public/models"
+BUCKETS = ("public", "arena-internal")
+MAX_UPLOAD = 4 << 30
+TOKEN_HINT = "set ARENA_ASSETS_TOKEN or log in with 'gcloud auth login'"
+
+
+class StoreError(RuntimeError):
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+def _reason(e: urllib.error.HTTPError) -> str:
+    body = e.read().decode(errors="replace").strip()
+    with contextlib.suppress(ValueError, TypeError, KeyError):
+        body = json.loads(body)["error"]
+    return str(body or e.reason)
+
+
+def store_url() -> str:
+    """Base URL of the asset store, `$ARENA_ASSETS_URL` or the public host."""
+    return (os.environ.get("ARENA_ASSETS_URL") or DEFAULT_URL).rstrip("/")
+
+
+def assets_root() -> Path | None:
+    """Download cache, `$ARENA_ASSETS_DIR` or `$ARENA_DATA_DIR/assets`, None with neither set."""
+    if root := os.environ.get("ARENA_ASSETS_DIR"):
+        return Path(root)
+    if data := os.environ.get("ARENA_DATA_DIR"):
+        return Path(data) / "assets"
+    return None
+
+
+def cache_root() -> Path:
+    root = assets_root()
+    if root is None:
+        raise StoreError("no asset cache directory: set ARENA_DATA_DIR or ARENA_ASSETS_DIR")
+    return root
+
+
+def index_ttl() -> int:
+    return int(os.environ.get("ARENA_MODELS_TTL", "86400"))
+
 
 def resolve_token() -> str:
-    """Resolve a GCS access token from the environment or gcloud."""
-    if token := os.environ.get("GCS_ACCESS_TOKEN"):
+    """Bearer token from `$ARENA_ASSETS_TOKEN`, else from gcloud."""
+    if token := os.environ.get("ARENA_ASSETS_TOKEN"):
         return token
     try:
         result = subprocess.run(
@@ -25,8 +74,16 @@ def resolve_token() -> str:
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as e:
-        raise RuntimeError("No GCS access token available. Set GCS_ACCESS_TOKEN or log in with 'gcloud auth login'.") from e
+        raise StoreError(f"no asset store token: {TOKEN_HINT}") from e
     return result.stdout.strip()
+
+
+def sha256_of(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def outermost(assets: typing.Iterable[str]) -> list[str]:
@@ -35,192 +92,296 @@ def outermost(assets: typing.Iterable[str]) -> list[str]:
     return [asset for asset in dict.fromkeys(assets) if not any(parent.as_posix() in listed for parent in PurePosixPath(asset).parents)]
 
 
+def _under(prefix: str) -> str:
+    prefix = prefix.strip("/")
+    return f"{prefix}/" if prefix else ""
+
+
 class Bucket:
-    _API = "{endpoint}/storage/v1/b/{bucket}/o"
-    _DOWNLOAD = "{endpoint}/download/storage/v1/b/{bucket}/o/{obj}?alt=media"
-    _UPLOAD = "{endpoint}/upload/storage/v1/b/{bucket}/o"
+    """One source on the asset store, `<bucket>[/<folder>]`, answering listings from the bucket index."""
 
-    def __init__(self, bucket: str, token: str | None = None):
-        self.name = bucket
+    def __init__(self, source: str, token: str | None = None):
+        self.name = source
         self.token = token
-        self._endpoint = os.environ.get("ARENA_ASSETS_ENDPOINT") or "https://storage.googleapis.com"
-        self._api = self._API.format(endpoint=self._endpoint, bucket=bucket)
+        self._base = store_url()
+        self.bucket, _, folder = source.strip("/").partition("/")
+        self._folder = _under(folder)
+        self._index: dict[str, dict] | None = None
+        self._revalidated = False
+        self._lock = threading.Lock()
+        self._token_lock = threading.Lock()
 
-    def _object_url(self, obj: str, **params: str) -> str:
-        encoded = urllib.parse.quote(obj, safe="")
-        query = urllib.parse.urlencode(params)
-        if obj:
-            return f"{self._api}/{encoded}?{query}" if query else f"{self._api}/{encoded}"
-        return f"{self._api}?{query}" if query else self._api
+    def _url(self, name: str) -> str:
+        return f"{self._base}/{self.bucket}/{urllib.parse.quote(name, safe='/')}"
 
-    def _upload_url(self, obj: str) -> str:
-        query = urllib.parse.urlencode({"uploadType": "media", "name": obj})
-        return f"{self._UPLOAD.format(endpoint=self._endpoint, bucket=self.name)}?{query}"
+    def _object_url(self, name: str) -> str:
+        return self._url(self._folder + name)
 
-    def _request(self, url: str, **kwargs: typing.Any) -> urllib.request.Request:
+    @staticmethod
+    def _request(url: str, token: str | None = None, **kwargs: typing.Any) -> urllib.request.Request:
         req = urllib.request.Request(url, **kwargs)
-        if self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
         return req
 
-    def _open(self, url: str, **kwargs: typing.Any) -> http.client.HTTPResponse:
-        """Open *url* anonymously until the bucket refuses, then with a resolved token."""
-        try:
-            return urllib.request.urlopen(self._request(url, **kwargs))
-        except urllib.error.HTTPError as e:
-            if self.token or e.code not in (401, 403):
-                raise
-            try:
+    def _token(self) -> str:
+        with self._token_lock:
+            if self.token is None:
                 self.token = resolve_token()
-            except RuntimeError:
-                raise e from None
-        return urllib.request.urlopen(self._request(url, **kwargs))
+            return self.token
+
+    def _urlopen(self, url: str, token: str | None, **kwargs: typing.Any) -> http.client.HTTPResponse:
+        try:
+            return urllib.request.urlopen(self._request(url, token, **kwargs))
+        except urllib.error.URLError as e:
+            if isinstance(e, urllib.error.HTTPError):
+                raise
+            raise StoreError(f"cannot reach the asset store at {self._base}: {e.reason}") from None
+
+    def _what(self, url: str, method: str) -> str:
+        return f"{method} {self.bucket}/{urllib.parse.unquote(url.removeprefix(f'{self._base}/{self.bucket}/'))}"
+
+    def _refused(self, e: urllib.error.HTTPError, what: str, token: str | None) -> StoreError:
+        reason = _reason(e)
+        if e.code == 401:
+            hint = TOKEN_HINT if token is None else "the token was not accepted, it may have expired"
+        elif e.code == 403:
+            hint = f"{self._base}/_api/whoami shows what the token may read and write"
+        elif e.code == 412:
+            hint = "it exists with other content and --no-overwrite keeps it"
+        else:
+            hint = ""
+        return StoreError(f"{what}: {e.code} {reason}" + (f", {hint}" if hint else ""), status=e.code)
+
+    def _open(self, url: str, **kwargs: typing.Any) -> http.client.HTTPResponse:
+        """Open *url* anonymously until the store refuses, then with a resolved token."""
+        what = self._what(url, kwargs.get("method", "GET"))
+        token = self.token
+        try:
+            return self._urlopen(url, token, **kwargs)
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 403):
+                raise
+            if token is not None:
+                raise self._refused(e, what, token) from None
+            try:
+                token = self._token()
+            except StoreError:
+                raise self._refused(e, what, None) from None
+        try:
+            return self._urlopen(url, token, **kwargs)
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 403):
+                raise
+            raise self._refused(e, what, token) from None
+
+    def _send(self, url: str, **kwargs: typing.Any) -> http.client.HTTPResponse:
+        """A write: authenticated from the start, a refusal raised with the store's reason."""
+        token = self._token()
+        try:
+            return self._urlopen(url, token, **kwargs)
+        except urllib.error.HTTPError as e:
+            raise self._refused(e, self._what(url, kwargs["method"]), token) from None
+
+    @property
+    def _index_path(self) -> Path:
+        return cache_root() / ".index" / f"{self.bucket}.json"
+
+    def _fetch_index(self, revalidate: bool) -> bytes:
+        """The bucket index from disk while younger than ARENA_MODELS_TTL, else revalidated by ETag."""
+        path = self._index_path
+        etag_path = path.with_suffix(".etag")
+        try:
+            cached = path.read_bytes()
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            cached, age = None, 0.0
+        if cached is not None and not revalidate and age < index_ttl():
+            return cached
+        headers = {"Accept-Encoding": "gzip"}
+        if cached is not None and etag_path.is_file():
+            headers["If-None-Match"] = etag_path.read_text().strip()
+        self._revalidated = True
+        try:
+            with self._open(self._url("index.json"), headers=headers) as resp:
+                body = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    body = gzip.decompress(body)
+                etag = resp.headers.get("ETag")
+        except urllib.error.HTTPError as e:
+            if e.code == 304 and cached is not None:
+                with contextlib.suppress(OSError):
+                    os.utime(path)
+                return cached
+            if e.code == 404:
+                raise StoreError(f"no bucket {self.bucket!r} on {self._base}, known buckets are {', '.join(BUCKETS)}", status=404) from None
+            raise StoreError(f"GET {self.bucket}/index.json: {e.code} {_reason(e)}", status=e.code) from None
+        with contextlib.suppress(OSError):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_bytes(body)
+            os.replace(tmp, path)
+            if etag:
+                etag_path.write_text(etag)
+            else:
+                etag_path.unlink(missing_ok=True)
+        return body
+
+    def _load(self, revalidate: bool = False) -> dict[str, dict]:
+        objects = json.loads(self._fetch_index(revalidate))["objects"]
+        return {entry["name"].removeprefix(self._folder): entry for entry in objects if entry["name"].startswith(self._folder)}
+
+    def objects(self) -> dict[str, dict]:
+        """Index entries of this source by object name, relative to its folder."""
+        with self._lock:
+            if self._index is None:
+                self._index = self._load()
+            return self._index
+
+    def _refresh(self) -> bool:
+        """Revalidate the index over the network, at most once per instance."""
+        with self._lock:
+            if self._revalidated:
+                return False
+            self._index = self._load(revalidate=True)
+            return True
+
+    def _stale(self) -> None:
+        """A write changed the bucket: the next process revalidates the index."""
+        with contextlib.suppress(OSError):
+            os.utime(self._index_path, (0, 0))
+
+    def _matching(self, keep: typing.Callable[[str], bool]) -> list[dict]:
+        found = [entry for name, entry in self.objects().items() if keep(name)]
+        if not found and self._refresh():
+            found = [entry for name, entry in self.objects().items() if keep(name)]
+        return found
 
     def listdir(self, prefix: str) -> list[dict]:
-        """List all objects under a prefix using the GCS JSON API."""
-        results = []
-        prefix = prefix.strip("/")
-        if prefix:
-            prefix += "/"
-
-        url = self._object_url("", prefix=prefix)
-
-        while url:
-            resp = self._open(url)
-            data = json.loads(resp.read())
-            results.extend(data.get("items", []))
-
-            next_token = data.get("nextPageToken")
-            url = self._object_url("", prefix=prefix, pageToken=next_token) if next_token else None
-
-        return results
+        """Index entries under a prefix, named relative to the source."""
+        prefix = _under(prefix)
+        return [{**entry, "name": entry["name"].removeprefix(self._folder)} for entry in self._matching(lambda name: name.startswith(prefix))]
 
     def prefix_exists(self, prefix: str) -> bool:
         """Whether any object lives under *prefix*."""
-        prefix = prefix.strip("/")
-        if prefix:
-            prefix += "/"
-        url = self._object_url("", prefix=prefix, maxResults="1", fields="items(name)")
-        resp = self._open(url)
-        return bool(json.loads(resp.read()).get("items"))
+        return bool(self.listdir(prefix))
 
     def list_assets(self, prefix: str = "") -> list[str]:
-        """List asset directories under a prefix: one server-side glob on the annotation file, names only."""
-        prefix = prefix.strip("/")
-        if prefix:
-            prefix += "/"
-        params = {
-            "prefix": prefix,
-            "matchGlob": f"**/{ANNOTATION_NAME}",
-            "fields": "items(name),nextPageToken",
-            "maxResults": "5000",
-        }
-        assets = []
-        url = self._object_url("", **params)
-        while url:
-            data = json.loads(self._open(url).read())
-            assets.extend(os.path.dirname(item["name"]) for item in data.get("items", []))
-            next_token = data.get("nextPageToken")
-            url = self._object_url("", **params, pageToken=next_token) if next_token else None
-        return outermost(assets)
+        """Asset directories under a prefix: the parents of annotation files."""
+        prefix = _under(prefix)
+        names = [entry["name"].removeprefix(self._folder) for entry in self._matching(lambda name: name.startswith(prefix) and PurePosixPath(name).name == ANNOTATION_NAME)]
+        return outermost([os.path.dirname(name) for name in names])
 
     def listchildren(self, prefix: str, containing: str | None = None) -> list[str]:
-        """Immediate child prefixes under *prefix*, one API call per page.
-
-        Buckets that carry no annotation sentinel (worlds, benchmark configs) are
-        enumerated by directory rather than by scanning every object. With *containing*
-        only children holding a file of that name at any depth count.
-        """
-        results: list[str] = []
-        prefix = prefix.strip("/")
-        if prefix:
-            prefix += "/"
-
+        """Immediate child directories under *prefix*. With *containing* only children holding a file of that name at any depth count."""
+        prefix = _under(prefix)
+        relative = [entry["name"].removeprefix(self._folder).removeprefix(prefix) for entry in self._matching(lambda name: name.startswith(prefix))]
         if containing:
-            glob_params = {"prefix": prefix, "matchGlob": f"**/{containing}", "fields": "items(name),nextPageToken", "maxResults": "5000"}
-            url = self._object_url("", **glob_params)
-            while url:
-                data = json.loads(self._open(url).read())
-                relative = (item["name"].removeprefix(prefix) for item in data.get("items", []))
-                results.extend(name.split("/")[0] for name in relative if "/" in name)
-                next_token = data.get("nextPageToken")
-                url = self._object_url("", **glob_params, pageToken=next_token) if next_token else None
-            return [f"{prefix}{child}" for child in dict.fromkeys(results)]
-
-        params = {"prefix": prefix, "delimiter": "/"}
-        url = self._object_url("", **params)
-
-        while url:
-            resp = self._open(url)
-            data = json.loads(resp.read())
-            results.extend(p.rstrip("/") for p in data.get("prefixes", []))
-
-            next_token = data.get("nextPageToken")
-            url = self._object_url("", **params, pageToken=next_token) if next_token else None
-
-        return results
+            relative = [name for name in relative if PurePosixPath(name).name == containing]
+        return [f"{prefix}{child}" for child in dict.fromkeys(name.split("/")[0] for name in relative if "/" in name)]
 
     def object_exists(self, name: str) -> bool:
         """Existence of an exact object, with no sentinel assumptions."""
-        try:
-            self._open(self._object_url(name, fields="name"), method="HEAD")
+        if name in self.objects():
             return True
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return False
-            raise
+        return self._refresh() and name in self.objects()
 
     def listdirs(self, prefixes: list[str]) -> dict[str, list[dict]]:
-        """List objects under multiple prefixes concurrently."""
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            futures = {pool.submit(self.listdir, p): p for p in prefixes}
-            return {futures[f]: f.result() for f in futures}
+        """Index entries under several prefixes."""
+        return {prefix: self.listdir(prefix) for prefix in prefixes}
 
     def asset_exists(self, asset: str, sentinel: str | None = ANNOTATION_NAME) -> bool:
-        """Check if an asset exists in the bucket.
-
-        With *sentinel* the check is for ``<asset>/<sentinel>``, which is how annotated
-        model assets are marked. Pass ``sentinel=None`` for payloads that carry no
-        sentinel (worlds, benchmark configs), where any object under the prefix counts.
-        """
+        """Whether `<asset>/<sentinel>` exists, or with *sentinel* None any object at or under *asset*."""
         if sentinel is None:
-            return self.prefix_exists(asset) or self.object_exists(asset)
+            return self.object_exists(asset) or self.prefix_exists(asset)
         if os.path.basename(asset) != sentinel:
             asset = os.path.join(asset, sentinel)
         return self.object_exists(asset)
 
     def assets_exist(self, assets: list[str], sentinel: str | None = ANNOTATION_NAME) -> list[tuple[str, bool]]:
-        """Check if multiple assets exist concurrently."""
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            futures = [(a, pool.submit(self.asset_exists, a, sentinel)) for a in assets]
-            return [(a, f.result()) for a, f in futures]
+        return [(asset, self.asset_exists(asset, sentinel)) for asset in assets]
 
-    def download(self, blob_name: str, local_path: str) -> int:
-        """Stream a single blob to a local file. Returns bytes downloaded."""
-        url = self._DOWNLOAD.format(endpoint=self._endpoint, bucket=self.name, obj=urllib.parse.quote(blob_name, safe=""))
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    def _receive(self, name: str, part: str) -> int:
+        """Append the rest of *name* to *part*, from its current size on."""
+        offset = os.path.getsize(part) if os.path.exists(part) else 0
+        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        try:
+            resp = self._open(self._object_url(name), headers=headers)
+        except urllib.error.HTTPError as e:
+            if e.code == 416 and offset:
+                return 0
+            raise StoreError(f"GET {self.name}/{name}: {e.code} {_reason(e)}", status=e.code) from None
         size = 0
-        with self._open(url) as resp, open(local_path, "wb") as f:
+        with resp, open(part, "ab" if resp.status == 206 else "wb") as f:
             while chunk := resp.read(1 << 20):
                 f.write(chunk)
                 size += len(chunk)
         return size
 
-    def upload(self, local_path: str, blob_name: str) -> int:
-        """Stream a local file to a blob. Returns bytes uploaded."""
+    def download(self, name: str, local_path: str) -> int:
+        """Stream one object to a local file, resuming a partial one and checking the index sha256. Returns bytes received."""
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+        part = f"{local_path}.part"
+        received = 0
+        expected = actual = None
+        for _ in range(2):
+            received += self._receive(name, part)
+            expected = self.objects().get(name, {}).get("sha256")
+            actual = sha256_of(part)
+            if expected is None or actual == expected:
+                os.replace(part, local_path)
+                return received
+            os.remove(part)
+            self._refresh()
+        raise StoreError(f"{name}: downloaded sha256 {actual} does not match the index's {expected}")
+
+    def upload(self, local_path: str, name: str, sha256: str | None = None, overwrite: bool = True) -> int:
+        """Stream a local file to an object. Returns bytes sent."""
         size = os.path.getsize(local_path)
+        if size > MAX_UPLOAD:
+            raise StoreError(f"{local_path} is {size} bytes, the store takes at most {MAX_UPLOAD}")
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+            "X-Content-SHA256": sha256 or sha256_of(local_path),
+        }
+        if not overwrite:
+            headers["If-None-Match"] = "*"
         with open(local_path, "rb") as f:
-            req = self._request(
-                self._upload_url(blob_name),
-                data=f,
-                method="POST",
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": str(size),
-                },
-            )
-            urllib.request.urlopen(req)
+            self._send(self._object_url(name), data=f, method="PUT", headers=headers).close()
+        self._stale()
         return size
+
+    def delete(self, name: str) -> None:
+        """Remove one object, one already gone counts as removed. The store allows it to its uploader or an admin."""
+        try:
+            self._send(self._object_url(name), method="DELETE").close()
+        except StoreError as e:
+            if e.status != 404:
+                raise
+        self._stale()
+
+    def under(self, prefix: str) -> list[str]:
+        """Names of the object *prefix* and of every object below it."""
+        prefix = prefix.strip("/")
+        if not prefix:
+            raise StoreError("refusing to select a whole source, name a path inside it")
+        return sorted(name for name in self.objects() if name == prefix or name.startswith(f"{prefix}/"))
+
+    def browse(self, path: str = "") -> tuple[dict[str, tuple[int, int]], list[dict]]:
+        """Folders (object count and bytes below each) and files directly under *path*."""
+        prefix = _under(path)
+        folders: dict[str, tuple[int, int]] = {}
+        files: list[dict] = []
+        for entry in self.listdir(prefix):
+            rest = entry["name"].removeprefix(prefix)
+            folder, slash, _ = rest.partition("/")
+            if slash:
+                count, size = folders.get(folder, (0, 0))
+                folders[folder] = (count + 1, size + int(entry.get("size", 0)))
+            else:
+                files.append({**entry, "name": rest})
+        return dict(sorted(folders.items())), sorted(files, key=lambda entry: entry["name"])
 
 
 def fetch_database(
@@ -230,11 +391,11 @@ def fetch_database(
     annotations: bool = True,
     model_formats: list[str] | None = None,
 ) -> None:
-    """Download files from multiple paths in a Google Cloud Storage bucket.
+    """Download files from multiple paths of an asset store source.
 
     Args:
-        bucket: The Google Cloud Storage bucket name to download from
-        bucket_paths: List of paths inside the bucket to download
+        bucket: The source to download from, `<bucket>[/<folder>]`
+        bucket_paths: List of paths inside the source to download
         destination: The local directory path to download to
         annotations: Whether to download annotation files (default: True)
         model_formats: List of model formats to download (e.g., ['usdz']). If None, download all formats
@@ -307,9 +468,9 @@ def fetch_database(
                 relative_blob_path = blob_name[len(prefix) :] if prefix and blob_name.startswith(prefix) else blob_name
                 local_file_path = os.path.join(destination, prefix, relative_blob_path.lstrip("/"))
 
-                if os.path.exists(local_file_path) and os.path.getsize(local_file_path) == blob_size:
+                if os.path.exists(local_file_path) and os.path.getsize(local_file_path) == blob_size and sha256_of(local_file_path) == blob.get("sha256"):
                     logger.info(
-                        "Skipping '%s' - already exists with correct size",
+                        "Skipping '%s' - already exists with matching sha256",
                         blob_name,
                     )
                     downloaded_count += 1
@@ -337,7 +498,13 @@ def fetch_database(
                 try:
                     for future in as_completed(futures):
                         blob_name, blob_size = futures[future]
-                        future.result()
+                        try:
+                            future.result()
+                        except StoreError as e:
+                            if e.status != 404:
+                                raise
+                            logger.warning("Skipping '%s' - listed in the index but gone from the store", blob_name)
+                            continue
 
                         downloaded_count += 1
                         downloaded_size += blob_size

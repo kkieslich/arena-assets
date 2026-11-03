@@ -30,6 +30,9 @@ The repository is also an `ament_python` ROS package: in the Arena workspace it 
 # list available assets
 arena-assets net default list
 
+# walk a source by folders: object count and size below each folder, then the files
+arena-assets net public/models browse Common/Object
+
 # download assets into a local directory
 arena-assets net default fetch -o ./models Common/Material/ABS_Hard_Leather
 
@@ -37,7 +40,7 @@ arena-assets net default fetch -o ./models Common/Material/ABS_Hard_Leather
 arena-assets net default fetch -o ./models --format usdz --no-annotation
 ```
 
-`default` resolves to the public GCS bucket; any other bucket name can be passed instead. `ARENA_ASSETS_ENDPOINT` replaces the GCS endpoint for every bucket call. `arena test` and CI point it at a dead loopback port, so test suites never reach a bucket.
+Every source lives on the asset store at `ARENA_ASSETS_URL` (default `https://storage.arena-rosnav.org`) and is named `<bucket>[/<folder>]`: `public/models`, `public/worlds` and `public/benchmarks` are folders of the anonymous `public` bucket, `arena-internal` needs a token, and `default` stands for `public/models`. Listing and existence checks read the bucket's `index.json` (object names, sizes, sha256) once per `ARENA_MODELS_TTL` seconds into `$ARENA_ASSETS_DIR/.index/` (`$ARENA_DATA_DIR/assets` when unset, an error with neither set), revalidate it by ETag after that, and once more when a name is missing. Downloads resume a partial `<file>.part` with a range request, are checked against the index sha256, and skip local files whose size and sha256 already match. A listed object the store answers with 404 is skipped with a warning, since the index can briefly list objects already gone. Every `net` verb reports a failure as one `error:` line on stderr and exits 1: no token (with how to get one), a refused token, a 403 naming the owner, a refused overwrite, an unreachable store. `arena test` and CI point `ARENA_ASSETS_URL` at a dead loopback port, so test suites never reach the store.
 
 ### Build a database
 
@@ -155,15 +158,24 @@ Each import converts items of an upstream dataset (objects, materials, worlds, s
 
 ### Private buckets
 
-Reads are anonymous until a bucket refuses them with a 401 or 403, then they retry with a token from the `GCS_ACCESS_TOKEN` environment variable or `gcloud auth print-access-token`, in that order. Public buckets never need a token.
+Reads are anonymous until the store refuses them with a 401 or 403, then they retry with a bearer token from the `ARENA_ASSETS_TOKEN` environment variable or `gcloud auth print-access-token`, in that order. The store accepts tokens of the gcloud CLI client only. `GET <ARENA_ASSETS_URL>/_api/whoami` with the token shows what it may read and write. The `public` bucket never needs a token.
 
 ### Upload a built database
 
 ```sh
-arena-assets net my-bucket author ./models -d Common
+arena-assets net public/models author ./models -d Common
 ```
 
-Files already present in the bucket with the same size are skipped. Uploading requires write access to the bucket: a token is taken from `--token`, the `GCS_ACCESS_TOKEN` environment variable, or `gcloud auth print-access-token`, in that order.
+Files whose sha256 the index already lists under the same name are skipped, everything else is sent with `PUT` and its `X-Content-SHA256`. The last stdout line is a JSON summary, `{"files", "sent", "skipped", "bytes"}`. Existing objects with other content are replaced, `--no-overwrite` makes the store refuse them instead. The store takes files up to 4 GiB and the upload checks every file before it sends the first. Uploading requires write access: a token is taken from `--token`, the `ARENA_ASSETS_TOKEN` environment variable, or `gcloud auth print-access-token`, in that order. A refusal prints the store's reason, which names the object's owner.
+
+### Delete objects
+
+```sh
+arena-assets net arena-internal delete recordings/take.mp4
+arena-assets net arena-internal delete -r worlds_draft/office
+```
+
+`-r` deletes every object below each named folder, a whole source is never selected. Each deleted name is printed. Only the object's uploader or an admin may delete it, with the same token resolution as uploads.
 
 ### Query
 

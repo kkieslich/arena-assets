@@ -175,7 +175,10 @@ def without_assets_dir():
     import os
 
     saved = os.environ.pop("ARENA_ASSETS_DIR", None)
+    saved_data = os.environ.pop("ARENA_DATA_DIR", None)
     yield
+    if saved_data is not None:
+        os.environ["ARENA_DATA_DIR"] = saved_data
     if saved is not None:
         os.environ["ARENA_ASSETS_DIR"] = saved
 

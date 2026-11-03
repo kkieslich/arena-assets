@@ -1,7 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from arena_assets.impl.fetch import Bucket, resolve_token
+from arena_assets.impl.fetch import MAX_UPLOAD, Bucket, StoreError, resolve_token, sha256_of, store_url
 from arena_assets.utils.logging import format_file_size, get_logger, get_manager
 
 
@@ -10,14 +10,16 @@ def author_database(
     source: str,
     destination: str = "",
     token: str | None = None,
-) -> None:
-    """Upload a built database directory to a Google Cloud Storage bucket.
+    overwrite: bool = True,
+) -> dict[str, int]:
+    """Upload a built database directory to an asset store source. Returns the counts of files, sent, skipped and bytes sent.
 
     Args:
-        bucket: The Google Cloud Storage bucket name to upload to
+        bucket: The source to upload to, `<bucket>[/<folder>]`
         source: The local built database directory to upload
-        destination: Path inside the bucket to upload under (default: bucket root)
-        token: OAuth2 access token. If None, resolved from GCS_ACCESS_TOKEN or gcloud
+        destination: Path inside the source to upload under (default: its root)
+        token: Bearer token. If None, resolved from ARENA_ASSETS_TOKEN or gcloud
+        overwrite: Replace objects that exist with other content, else the store refuses them
     """
     logger = get_logger("author")
     try:
@@ -33,17 +35,21 @@ def author_database(
             for file in sorted(files):
                 local_path = os.path.join(root, file)
                 blob_name = prefix + os.path.relpath(local_path, source).replace(os.sep, "/")
-                local_files.append((local_path, blob_name, os.path.getsize(local_path)))
+                local_files.append((local_path, blob_name, os.path.getsize(local_path), sha256_of(local_path)))
 
         if not local_files:
             logger.warning("No files found in '%s'", source)
-            return
+            return {"files": 0, "sent": 0, "skipped": 0, "bytes": 0}
+
+        too_large = [f"{path} ({size} bytes)" for path, _, size, _ in local_files if size > MAX_UPLOAD]
+        if too_large:
+            raise StoreError(f"the store takes files up to {MAX_UPLOAD} bytes: {', '.join(too_large)}")
 
         total_files = len(local_files)
-        total_size = sum(size for _, _, size in local_files)
+        total_size = sum(size for _, _, size, _ in local_files)
         logger.info("Found %d files (%s) to upload", total_files, format_file_size(total_size))
 
-        remote_sizes = {blob["name"]: int(blob.get("size", 0)) for blob in b.listdir(destination)}
+        remote_sha256 = {blob["name"]: blob.get("sha256") for blob in b.listdir(destination)}
 
         uploaded_count = 0
         uploaded_size = 0
@@ -71,10 +77,10 @@ def author_database(
 
             pending = []
 
-            for local_path, blob_name, size in local_files:
-                if remote_sizes.get(blob_name) == size:
+            for local_path, blob_name, size, sha256 in local_files:
+                if remote_sha256.get(blob_name) == sha256:
                     logger.info(
-                        "Skipping '%s' - already exists with correct size",
+                        "Skipping '%s' - already exists with matching sha256",
                         blob_name,
                     )
                     uploaded_count += 1
@@ -95,10 +101,10 @@ def author_database(
                     )
                     continue
 
-                pending.append((local_path, blob_name, size))
+                pending.append((local_path, blob_name, size, sha256))
 
             with ThreadPoolExecutor(max_workers=20) as pool:
-                futures = {pool.submit(b.upload, local_path, blob_name): (blob_name, size) for local_path, blob_name, size in pending}
+                futures = {pool.submit(b.upload, local_path, blob_name, sha256, overwrite): (blob_name, size) for local_path, blob_name, size, sha256 in pending}
                 try:
                     for future in as_completed(futures):
                         blob_name, size = futures[future]
@@ -127,12 +133,14 @@ def author_database(
             status_bar.update(current_file="Complete!")
 
         logger.info(
-            "Uploaded %d files (%s) successfully to: gs://%s/%s",
+            "Uploaded %d files (%s) successfully to: %s/%s/%s",
             uploaded_count,
             format_file_size(uploaded_size),
+            store_url(),
             bucket,
             prefix,
         )
+        return {"files": total_files, "sent": len(pending), "skipped": total_files - len(pending), "bytes": uploaded_size}
 
     except Exception as e:
         logger.error("Author error: %s", e)

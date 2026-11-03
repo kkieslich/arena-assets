@@ -2,7 +2,7 @@ import os
 
 import typer
 
-from arena_assets.cli.utils import safe_echo
+from arena_assets.cli.utils import safe_echo, store_errors
 
 
 def fetch_command(
@@ -40,7 +40,7 @@ def fetch_command(
 
 def add_to_cmd(cmd: typer.Typer):
     """Add fetch command to the network command group."""
-    cmd.command("fetch")(fetch_command)
+    cmd.command("fetch")(store_errors(fetch_command))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import typer
 
-from arena_assets.cli.utils import safe_echo
+from arena_assets.cli.utils import safe_echo, store_errors
 
 
 def exists_command(
@@ -25,7 +25,7 @@ def exists_command(
 
 def add_to_cmd(cmd: typer.Typer):
     """Add exists command to the network command group."""
-    cmd.command("exists")(exists_command)
+    cmd.command("exists")(store_errors(exists_command))
 
 
 if __name__ == "__main__":

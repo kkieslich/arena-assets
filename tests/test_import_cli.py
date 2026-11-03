@@ -106,7 +106,7 @@ def test_items_and_all_are_refused(tmp_path):
 
 
 def test_out_default_needs_assets_dir(tmp_path):
-    result = runner.invoke(app, ["import", "object", "gso", ITEM, "--cache", str(tmp_path)], env={"ARENA_ASSETS_DIR": None, "ARENA_ASSETS_DIR_IMPORTED": None})
+    result = runner.invoke(app, ["import", "object", "gso", ITEM, "--cache", str(tmp_path)], env={"ARENA_ASSETS_DIR": None, "ARENA_ASSETS_DIR_IMPORTED": None, "ARENA_DATA_DIR": None})
     assert result.exit_code != 0
     assert "ARENA_ASSETS_DIR" in plain(result.output)
     assert "--out" in plain(result.output)

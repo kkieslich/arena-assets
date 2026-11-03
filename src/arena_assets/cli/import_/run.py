@@ -1,5 +1,4 @@
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -9,8 +8,9 @@ from arena_assets.cli.utils import safe_echo
 
 
 def _assets_root() -> Path | None:
-    root = os.environ.get("ARENA_ASSETS_DIR")
-    return Path(root) if root else None
+    from arena_assets.impl.fetch import assets_root
+
+    return assets_root()
 
 
 def _default_out(importer: type) -> Path:

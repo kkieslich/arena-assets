@@ -1,6 +1,6 @@
 import typer
 
-from arena_assets.cli.utils import safe_echo
+from arena_assets.cli.utils import safe_echo, store_errors
 
 
 def list_command(
@@ -31,7 +31,7 @@ def list_command(
 
 def add_to_cmd(cmd: typer.Typer):
     """Add list command to the network command group."""
-    cmd.command("list")(list_command)
+    cmd.command("list")(store_errors(list_command))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from arena_assets.utils import logging as assets_logging
 from arena_assets.utils.geom import BoundingBox
 from arena_assets.utils.ModelConverter import BlenderUnavailable, command, environment
 from http_host import Host
+from store_host import Store
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +111,22 @@ def host():
     server = Host()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+@pytest.fixture
+def store(monkeypatch, tmp_path):
+    server = Store()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ARENA_ASSETS_URL", server.base)
+    monkeypatch.setenv("ARENA_ASSETS_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("ARENA_ASSETS_TOKEN", raising=False)
+    monkeypatch.delenv("ARENA_MODELS_TTL", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-gcloud"))
     yield server
     server.shutdown()
     server.server_close()
