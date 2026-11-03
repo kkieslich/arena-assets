@@ -102,7 +102,7 @@ class Quick(Http):
 
 
 class Impatient(Quick):
-    timeout = 0.2
+    timeout = 1.0
 
 
 class Pausing(Http):
@@ -151,7 +151,7 @@ def test_get_never_keeps_a_body_cut_short(tmp_path):
 
 
 def test_get_retries_a_host_that_stalls_past_the_timeout(tmp_path):
-    with serving(Reply(body=b"late", stall=1.0), Reply(body=b"payload")) as server:
+    with serving(Reply(body=b"late", stall=5.0), Reply(body=b"payload")) as server:
         dest = Impatient(server.base).get("file.bin", tmp_path / "file.bin")
     assert dest.read_bytes() == b"payload"
     assert len(server.seen) == 2
