@@ -18,7 +18,7 @@ Crop, in the target frame: X from -width/2 to +width/2 and Z from --floor to --h
 
 Captured geometry is seen by lidar and depth cameras but has no collision of its own. A wall crop therefore keeps 5 cm in front of the captured wall plane by default and deeper crops are opt-in. An object is visual only and physics ignores it, annotation.yaml records the crop as its bounding box.
 
-Collision is optional: --collider-mesh takes a triangle mesh of the same capture (.obj or .ply, in the source stage frame, for example a surface reconstructed from the training views). It is registered and cropped like the Gaussians and baked into NAME.usda as an invisible static mesh collider, so in Isaac robots stop at it while cameras and lidar keep seeing the splat. Gazebo gets it through NAME.sdf, which holds only the collision, and annotation.yaml names the plain mesh NAME.collider.obj. 'arena-assets collider' replaces or removes the collider later.
+Collision is optional: --collider-mesh takes a triangle mesh of the same capture (.obj or .ply, in the source stage frame, for example a surface reconstructed from the training views). It is registered and cropped like the Gaussians and baked into NAME.usda as an invisible static mesh collider, so in Isaac robots stop at it while cameras and lidar keep seeing the splat. Gazebo gets it through NAME.sdf, which holds only the collision, and annotation.yaml names the plain mesh NAME.collider.obj. 'arena-assets collider' replaces or removes the collider later. Without a mesh, --generate-collider builds the collider from the kept Gaussians instead: virtual cameras render depth images of the splat (the [collider] extra, fast on a CUDA GPU), and the images are fused into a closed mesh just outside the surface cameras and lidar see, down to the floor. Running the verb again builds it again; 'arena-assets collider OUT_DIR --remove' takes it out.
 
 Bundle origin: for a wall, the wall base midpoint at the BACK of the crop, which is the wall frame shifted by +behind along Y. The physical wall of the wall kind sits there, so the whole capture lies in front of it. With --behind B the captured wall surface stands B meters in front of the physical wall. For an object, the object frame origin, so a pose at floor height stands it on the floor.
 
@@ -57,6 +57,7 @@ def splat_command(
         metavar="FILE",
         help="Collision mesh of the capture, an .obj or .ply file in the source stage frame (polygons are split into triangles). A triangle is kept with all its corners inside the crop and none inside a --drop box. Baked into NAME.usda and a collision-only NAME.sdf, kept as NAME.collider.obj and named in annotation.yaml. Omit it for a bundle without collision",
     ),
+    generate_collider: bool = typer.Option(False, "--generate-collider", help="Build the collider from the kept Gaussians, fast on a CUDA GPU. Exclusive with --collider-mesh"),
     max_scale: float = typer.Option(0.2, "--max-scale", help="Drop Gaussians whose largest axis exceeds this many meters after registration, they blow up the extent"),
     min_opacity: float = typer.Option(0.0, "--min-opacity", help="Drop Gaussians below this opacity, 0 keeps all and 1 keeps only opaque ones"),
     desc: str | None = typer.Option(None, "--desc", help="Description for annotation.yaml. Defaults to a sentence with the crop size"),
@@ -75,6 +76,8 @@ def splat_command(
         raise _fail("--object needs --depth: the object crop spans Y from -depth/2 to +depth/2 in object-frame meters")
     if object_ and behind is not None:
         raise _fail("--behind applies to walls only, an object crop is centered on its origin: drop --behind or set --depth to the full crop depth")
+    if generate_collider and collider_mesh is not None:
+        raise _fail("--generate-collider and --collider-mesh are exclusive, pass the mesh of the capture or let the collider be built from the Gaussians")
 
     name = name or out_dir.resolve().name
     try:
@@ -99,6 +102,17 @@ def splat_command(
     safe_echo(f"kept {bundle.kept} of {bundle.total} particles", ctx)
     if collider_mesh is not None:
         safe_echo(f"collider keeps {bundle.collider_kept} of {bundle.collider_total} triangles", ctx)
+    if generate_collider:
+        from arena_assets.impl.collider import ColliderError
+        from arena_assets.impl.collider_gen import attach_points, generate
+
+        try:
+            generated = generate(out_dir)
+            attach_points(out_dir, generated.points, generated.triangles, generated.source)
+        except ColliderError as error:
+            typer.echo(f"arena-assets splat: wrote {out_dir} without a collider, generating it failed: {error}. Run the verb again once that is fixed", err=True)
+            raise typer.Exit(1) from None
+        safe_echo(generated.describe(), ctx)
     typer.echo(str(out_dir))
 
 
