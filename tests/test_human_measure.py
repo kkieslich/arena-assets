@@ -124,6 +124,7 @@ def test_read_skin_takes_each_joint_rotation_from_its_scaled_inverse_bind(tmp_pa
     assert skin.joints["Hips"] == pytest.approx([0.0, 0.0, 0.9])
     assert skin.frames["Hips"] == pytest.approx(np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
     assert skin.frames["LeftUpLeg"] == pytest.approx(np.eye(3))
+    assert skin.inverse_binds["Hips"] == pytest.approx(np.array([[0.0, 0.5, 0.0, 0.0], [-0.5, 0.0, 0.0, 0.0], [0.0, 0.0, 0.5, -0.45], [0.0, 0.0, 0.0, 1.0]]))
 
 
 def test_read_skin_names_idref_joints_after_their_scene_nodes(tmp_path):
