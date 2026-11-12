@@ -10,6 +10,7 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdVol, Vt
 from typer.testing import CliRunner
 
 from arena_assets.__main__ import app
+from arena_assets.impl.splat import ObjectCrop, SplatError, gaussian_ply_stage
 from arena_assets.utils.mesh_io import read_mesh
 
 runner = CliRunner()
@@ -592,3 +593,117 @@ def test_collider_mesh_in_an_unknown_format_is_refused(source, tmp_path):
     mesh.write_text("solid")
     out = tmp_path / "lab_wall"
     assert_refused(splat(source.path, out, "--collider-mesh", str(mesh)), out, "--collider-mesh", "not one of the mesh formats .obj, .ply")
+
+
+PLY_COUNT = 6
+PLY_BOX = ObjectCrop(width=4.0, depth=4.0, height=3.0, floor=0.0)
+
+
+def write_gaussian_ply(path: Path, rows: dict[str, np.ndarray], rest: int = 0, header_format: str = "binary_little_endian") -> Path:
+    names = ["x", "y", "z", "scale_0", "scale_1", "scale_2", "f_dc_0", "f_dc_1", "f_dc_2", *[f"f_rest_{index}" for index in range(rest)], "opacity", "rot_0", "rot_1", "rot_2", "rot_3", "lod"]
+    table = np.zeros(PLY_COUNT, [(name, "<f4") for name in names])
+    for name, values in rows.items():
+        table[name] = values
+    header = "".join(f"property float {name}\n" for name in names)
+    path.write_bytes(f"ply\nformat {header_format} 1.0\nelement vertex {PLY_COUNT}\n{header}end_header\n".encode() + table.tobytes())
+    return path
+
+
+def ply_rows(rest: int = 0) -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(3)
+    rows = {
+        "x": np.array([0.5, -1.0, 1.5, 0.0, 50.0, 0.25]),
+        "y": np.array([0.5, 1.0, -1.5, 0.0, 0.0, 0.25]),
+        "z": np.array([0.5, 1.0, 2.5, 0.2, 0.0, 1.0]),
+        "opacity": np.array([0.0, 2.0, -2.0, 4.0, 1.0, 1.0]),
+        "rot_0": np.array([0.6, 1.0, 0.0, 0.0, 1.0, 1.0]),
+        "rot_1": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        "rot_2": np.array([0.8, 0.0, 1.0, 0.0, 0.0, 0.0]),
+        "rot_3": np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+    }
+    for axis in range(3):
+        rows[f"scale_{axis}"] = np.full(PLY_COUNT, np.log(0.05))
+        rows[f"f_dc_{axis}"] = rng.uniform(-1.0, 1.0, PLY_COUNT)
+    rows["scale_1"][5] = np.log(3.0)
+    for index in range(rest):
+        rows[f"f_rest_{index}"] = rng.uniform(-1.0, 1.0, PLY_COUNT)
+    return rows
+
+
+def staged(path: Path) -> tuple[Usd.Stage, Usd.Prim]:
+    stage = Usd.Stage.Open(str(path))
+    return stage, only_field(stage)
+
+
+def test_gaussian_ply_becomes_a_particle_field_in_linear_units(tmp_path):
+    rows = ply_rows()
+    ply = write_gaussian_ply(tmp_path / "gs.ply", rows)
+    kept, total = gaussian_ply_stage(ply, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    assert (kept, total) == (4, PLY_COUNT)
+    _stage, field = staged(tmp_path / "scene.usdc")
+    assert field.GetTypeName() == "ParticleField3DGaussianSplat"
+    assert field.GetAttribute("radiance:sphericalHarmonicsDegree").Get() == 0
+    pick = [0, 1, 2, 3]
+    np.testing.assert_allclose(np.array(field.GetAttribute("positions").Get()), np.stack([rows[axis][pick] for axis in "xyz"], axis=1), atol=1e-6)
+    np.testing.assert_allclose(np.array(field.GetAttribute("scales").Get()), 0.05, atol=1e-6)
+    np.testing.assert_allclose(np.array(field.GetAttribute("opacities").Get()), 1 / (1 + np.exp(-rows["opacity"][pick])), atol=1e-6)
+    np.testing.assert_allclose(np.array(field.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get()), np.stack([rows[f"f_dc_{axis}"][pick] for axis in range(3)], axis=1), atol=1e-6)
+
+
+def test_gaussian_ply_orientations_keep_the_real_part_first_in_the_quaternion(tmp_path):
+    ply = write_gaussian_ply(tmp_path / "gs.ply", ply_rows())
+    gaussian_ply_stage(ply, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    _stage, field = staged(tmp_path / "scene.usdc")
+    quaternions = field.GetAttribute("orientations").Get()
+    first = Gf.Quatf(quaternions[0])
+    assert first.GetReal() == pytest.approx(0.6)
+    assert tuple(first.GetImaginary()) == pytest.approx((0.0, 0.8, 0.0))
+    last = Gf.Quatf(quaternions[3])
+    assert last.GetReal() == pytest.approx(0.0)
+    assert tuple(last.GetImaginary()) == pytest.approx((0.0, 0.0, 1.0))
+
+
+def test_gaussian_ply_crop_is_applied_in_the_target_frame(tmp_path):
+    shift = np.eye(4)
+    shift[:3, 3] = (-1.0, 0.0, 0.0)
+    ply = write_gaussian_ply(tmp_path / "gs.ply", ply_rows())
+    kept, _ = gaussian_ply_stage(ply, tmp_path / "scene.usdc", shift, ObjectCrop(width=1.4, depth=4.0, height=3.0, floor=0.0))
+    assert kept == 2
+    _stage, field = staged(tmp_path / "scene.usdc")
+    np.testing.assert_allclose(np.array(field.GetAttribute("positions").Get()), [[0.5, 0.5, 0.5], [1.5, -1.5, 2.5]], atol=1e-6)
+
+
+def test_gaussian_ply_opacity_threshold_keeps_the_opaque_ones(tmp_path):
+    ply = write_gaussian_ply(tmp_path / "gs.ply", ply_rows())
+    kept, _ = gaussian_ply_stage(ply, tmp_path / "scene.usdc", np.eye(4), PLY_BOX, min_opacity=0.6)
+    assert kept == 2
+
+
+def test_gaussian_ply_degree_one_harmonics_are_ordered_per_particle(tmp_path):
+    rows = ply_rows(rest=9)
+    ply = write_gaussian_ply(tmp_path / "gs.ply", rows, rest=9)
+    gaussian_ply_stage(ply, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    _stage, field = staged(tmp_path / "scene.usdc")
+    assert field.GetAttribute("radiance:sphericalHarmonicsDegree").Get() == 1
+    coefficients = np.array(field.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get()).reshape(4, 4, 3)
+    np.testing.assert_allclose(coefficients[:, 0], np.stack([rows[f"f_dc_{axis}"][:4] for axis in range(3)], axis=1), atol=1e-6)
+    for particle in range(4):
+        for channel in range(3):
+            for coefficient in range(3):
+                assert coefficients[particle, 1 + coefficient, channel] == pytest.approx(rows[f"f_rest_{channel * 3 + coefficient}"][particle], abs=1e-6)
+
+
+def test_gaussian_ply_refusals_name_the_problem(tmp_path):
+    rows = ply_rows()
+    ascii_ply = write_gaussian_ply(tmp_path / "ascii.ply", rows, header_format="ascii")
+    with pytest.raises(SplatError, match="not binary PLY"):
+        gaussian_ply_stage(ascii_ply, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    far = write_gaussian_ply(tmp_path / "far.ply", {**rows, "x": rows["x"] + 100.0})
+    with pytest.raises(SplatError, match=f"keeps 0 of {PLY_COUNT} particles"):
+        gaussian_ply_stage(far, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    with pytest.raises(SplatError, match="does not exist"):
+        gaussian_ply_stage(tmp_path / "absent.ply", tmp_path / "scene.usdc", np.eye(4), PLY_BOX)
+    plain = tmp_path / "plain.ply"
+    plain.write_bytes(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nend_header\n" + bytes(12))
+    with pytest.raises(SplatError, match="lacks the Gaussian splat properties scale_0"):
+        gaussian_ply_stage(plain, tmp_path / "scene.usdc", np.eye(4), PLY_BOX)

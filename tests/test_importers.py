@@ -58,18 +58,21 @@ def test_registry_lists_importers_by_kind_then_source():
         ("sound", "cmu_arctic"),
         ("sound", "fsd50k"),
         ("suite", "barn"),
+        ("suite", "sidewalkbench"),
         ("suite", "socnavbench"),
         ("world", "barn"),
         ("world", "houseexpo"),
         ("world", "procthor"),
+        ("world", "sidewalkbench"),
     ]
 
 
 def test_kinds_and_the_sources_of_a_kind():
     assert IMPORTERS.kinds() == ["animation", "episode", "material", "object", "scenario", "sound", "suite", "world"]
-    assert IMPORTERS.names("world") == ["barn", "houseexpo", "procthor"]
+    assert IMPORTERS.names("world") == ["barn", "houseexpo", "procthor", "sidewalkbench"]
     assert IMPORTERS.kinds_of("barn") == ["suite", "world"]
     assert IMPORTERS.kinds_of("socnavbench") == ["scenario", "suite"]
+    assert IMPORTERS.kinds_of("sidewalkbench") == ["suite", "world"]
     assert IMPORTERS.kinds_of("nope") == []
 
 

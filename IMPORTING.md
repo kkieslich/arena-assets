@@ -106,6 +106,10 @@ World sources write `worlds/<name>` in world format 2, which `WorldIdentifier` r
 
 [BARN challenge](https://github.com/Daffan/the-barn-challenge) worlds 0 to 299 under MIT. The item id is the world number (`import world barn 17`) and the world `barn_<index>`, built by the `barn` world generator from the upstream world file, with the challenge start and goal as its scenario. The whole benchmark is the [barn suite](#barn-1).
 
+### sidewalkbench
+
+[SidewalkBench](https://huggingface.co/datasets/UCLA-VAIL/SidewalkBench-GS-Assets) scanned sidewalk scenes under MIT. The item id is the scene name (`import world sidewalkbench ucla_crosswalk`, 11 scenes) and the world `sidewalkbench_<scene>`. Its `sidewalk` and `crosswalk` zones are cut from the 0.1 m semantic grid and tile the walkway without gaps (the crosswalks first, the sidewalks the rest of it), its walls are the outlines of the collision mesh between 0.3 m and 1.5 m above the local ground, and one world-local splat bundle carries the Gaussians for Isaac with the mesh as its collider. Each annotated route becomes a scenario `straight_<i>`, `curve_<i>`, `crosswalk_<i>` or `long_<i>` with the robot start, a `goto` to the goal (either moved along the route to 0.6 m from the nearest wall when the annotation puts it closer), the nearby traffic cones as the store's `Warehouse/Traffic_Cone` and the route's pedestrians. A scene downloads 0.4 to 1.9 GB (`gs.ply` and `mesh.ply`) and converts in about a minute. The whole benchmark is the [sidewalkbench suite](#sidewalkbench-1).
+
 ## Scenarios
 
 Scenario sources write recorded pedestrians as replay scenarios (`human:=replay`, see the [replay adapter](../arena_runtime/arena_runtime/arena_runtime/humans/README.md#replay-adapter-humanreplay)), each bringing the world it plays in where that is not imported yet. Tracks are resampled to 10 Hz with one `stays:` entry per continuous stay for a path follower.
@@ -141,6 +145,10 @@ The [BARN challenge](https://github.com/Daffan/the-barn-challenge) as one item (
 ### socnavbench
 
 [SocNavBench](https://github.com/CMU-TBD/SocNavBench) as one item (`import suite socnavbench socnavbench`): `suites/socnavbench` with one jackal stage per curated [socnavbench episode](#socnavbench) and its time budget, the two scene worlds bundled, `contests/socnavbench` with SocNavBench's 0.3 m goal margin, and `manifests/socnavbench`. See [SocNavBench](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#socnavbench). The verdict is `unclear`, as for the scenarios.
+
+### sidewalkbench
+
+[SidewalkBench](https://github.com/VAIL-UCLA/SidewalkBench) (Liu, He, Alumootil, Pandya, Squicciarini, Wu, Zhou, CoRL 2026) as one item (`import suite sidewalkbench sidewalkbench`): `suites/sidewalkbench` with jackal stages under `robots: scenario` and `obstacles: scenario`, the unit tests on generated `sidewalk` worlds (`straight`, `corner`, `crosswalk`, seeds 42 to 46) and on the `straight_<i>`, `curve_<i>` and `crosswalk_<i>` routes of every scanned scene, one pedestrian-reactive stage per behavior, and the long-horizon stages on the generated `block` world and the scanned `long_<i>` routes, every stage with a budget from its route length at 0.5 m/s. The generated worlds are built at import and bundled under `worlds/`, the scanned scenes come through the [sidewalkbench](#sidewalkbench) world source. `contests/sidewalkbench` pins a nav2 `dwb` contestant that ends an episode on collision, and `manifests/sidewalkbench` tabulates the `sidewalk_*` metrics (route completion per layout, success per behavior, failures per 100 m and mean speed per contestant). Code under Apache 2.0, scenes under MIT. See [SidewalkBench](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#sidewalkbench).
 
 ## Sounds
 
