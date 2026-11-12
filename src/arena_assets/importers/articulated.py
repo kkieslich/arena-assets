@@ -20,6 +20,7 @@ import yaml
 
 from arena_assets.impl import ANNOTATION_NAME, AssetType
 from arena_assets.impl.build import DatabaseBuilder, OverwriteMode, replacing
+from arena_assets.utils.geom import nearest_rotation, unit
 from arena_assets.utils.logging import get_logger
 
 if typing.TYPE_CHECKING:
@@ -273,14 +274,8 @@ def _frame(position: Iterable[float], rotation: np.ndarray) -> np.ndarray:
     return frame
 
 
-def _unit(vector: np.ndarray) -> Vector:
-    return typing.cast(Vector, tuple(float(component) for component in vector / np.linalg.norm(vector)))
-
-
-def _rotation(matrix: np.ndarray) -> np.ndarray:
-    """Rotation part of a linear map, its scale and shear taken out."""
-    u, _, vt = np.linalg.svd(matrix[:3, :3])
-    return u @ vt
+def _vector(vector: np.ndarray) -> Vector:
+    return typing.cast(Vector, tuple(float(component) for component in unit(vector)))
 
 
 def _angle(rotation: np.ndarray, axis: np.ndarray) -> float:
@@ -432,7 +427,7 @@ def _usd_edge(prim: Usd.Prim, stage: Usd.Stage, cache: UsdGeom.XformCache, model
         frames.append(model @ _world(cache, stage.GetPrimAtPath(target[0])) @ local)
     bodies = [_body(stage.GetPrimAtPath(target[0])) for target in targets]
     local_axis = np.array(AXES[str(token)])
-    rotation0, rotation1 = _rotation(frames[0]), _rotation(frames[1])
+    rotation0, rotation1 = nearest_rotation(frames[0]), nearest_rotation(frames[1])
     meters = float(np.linalg.norm(model[:3, 0]))
     axis = rotation0 @ local_axis
     rest = 0.0
@@ -457,7 +452,7 @@ def _usd_edge(prim: Usd.Prim, stage: Usd.Stage, cache: UsdGeom.XformCache, model
         parent=str(bodies[0].GetPath()),
         child=str(bodies[1].GetPath()),
         origin=typing.cast(Vector, tuple(float(component) for component in frames[0][:3, 3])),
-        axis=_unit(axis),
+        axis=_vector(axis),
         limit=limit,
         label=prim.GetName(),
         dynamics=None if kind == "fixed" else _usd_dynamics(prim, kind != "prismatic", str(token), rest, meters),
@@ -577,7 +572,7 @@ def read_urdf(path: Path) -> Urdf:
                     parent=parent,
                     child=child,
                     origin=typing.cast(Vector, tuple(float(component) for component in frame_of[:3, 3])),
-                    axis=_unit(frame_of[:3, :3] @ local_axis),
+                    axis=_vector(frame_of[:3, :3] @ local_axis),
                     limit=limit,
                     dynamics=dynamics,
                 )

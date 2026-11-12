@@ -15,10 +15,13 @@ from arena_assets import semantic
 from arena_assets.impl import ANNOTATION_NAME, Face, collider, converter
 from arena_assets.impl.build.ObjectDatabaseBuilder import ObjectAnnotation
 from arena_assets.utils.geom import BoundingBox
-from arena_assets.utils.mesh_io import MeshError, read_mesh
+from arena_assets.utils.mesh_io import PLY_FORMATS, PLY_TYPES, MeshError, read_mesh
 
 EXTENT_PAD_SCALES = 3.0
 COLLINEAR_RATIO = 1e-6
+PLY_CHUNK = 1 << 20
+PLY_REQUIRED = ("x", "y", "z", "scale_0", "scale_1", "scale_2", "opacity", "rot_0", "rot_1", "rot_2", "rot_3", "f_dc_0", "f_dc_1", "f_dc_2")
+PLY_REST_DEGREES = {0: 0, 9: 1, 24: 2, 45: 3}
 
 
 class _VtArray(Protocol):
@@ -300,6 +303,104 @@ def _select_collider(path: Path, to_target: np.ndarray, crop: Crop, drops: list[
     used, kept = np.unique(triangles[keep], return_inverse=True)
     to_bundle = crop.to_bundle
     return target[used] @ to_bundle[:3, :3].T + to_bundle[:3, 3], kept.reshape(-1, 3), len(triangles)
+
+
+def _gaussian_ply_layout(source: Path) -> tuple[np.dtype, int, int, int]:
+    """Vertex dtype, count, body offset and spherical harmonics degree of a binary INRIA-format Gaussian .ply."""
+    if not source.is_file():
+        raise SplatError(f"SOURCE {source} does not exist, pass the Gaussian splat .ply")
+    properties: list[tuple[str, str]] = []
+    count = 0
+    endian = None
+    with open(source, "rb") as f:
+        if f.readline().strip() != b"ply":
+            raise SplatError(f"SOURCE {source} is not a PLY file, it must start with 'ply'")
+        while True:
+            line = f.readline()
+            if not line:
+                raise SplatError(f"SOURCE {source} has no 'end_header' line")
+            tokens = line.decode("ascii", "replace").split()
+            if tokens == ["end_header"]:
+                break
+            if tokens[:1] == ["format"]:
+                endian = PLY_FORMATS.get(tokens[1])
+            elif tokens[:2] == ["element", "vertex"]:
+                count = int(tokens[2])
+            elif tokens[:1] == ["property"]:
+                if tokens[1] not in PLY_TYPES:
+                    raise SplatError(f"SOURCE {source} has the unsupported PLY property {' '.join(tokens[1:])!r}, pass a Gaussian splat with plain float vertex properties")
+                properties.append((tokens[2], tokens[1]))
+        offset = f.tell()
+    if not endian:
+        raise SplatError(f"SOURCE {source} is not binary PLY, pass the binary_little_endian Gaussian splat")
+    names = [name for name, _ in properties]
+    missing = [name for name in PLY_REQUIRED if name not in names]
+    if missing:
+        raise SplatError(f"SOURCE {source} lacks the Gaussian splat properties {', '.join(missing)}, it holds {', '.join(names)}")
+    rest = sum(name.startswith("f_rest_") for name in names)
+    if rest not in PLY_REST_DEGREES:
+        raise SplatError(f"SOURCE {source} holds {rest} f_rest properties, a spherical harmonics degree 0 to 3 splat holds {', '.join(str(n) for n in PLY_REST_DEGREES)}")
+    return np.dtype([(name, endian + PLY_TYPES[kind]) for name, kind in properties]), count, offset, PLY_REST_DEGREES[rest]
+
+
+def _ply_coefficients(rows: np.ndarray, degree: int) -> np.ndarray:
+    """Per-particle (count, coefficients, 3) spherical harmonics from the DC and the channel-major f_rest columns."""
+    dc = np.stack([rows[f"f_dc_{channel}"] for channel in range(3)], axis=1).astype(np.float32)[:, None, :]
+    per_channel = (degree + 1) ** 2 - 1
+    if not per_channel:
+        return dc
+    rest = np.stack([rows[f"f_rest_{index}"] for index in range(3 * per_channel)], axis=1).astype(np.float32)
+    return np.concatenate([dc, rest.reshape(len(rows), 3, per_channel).transpose(0, 2, 1)], axis=1)
+
+
+def gaussian_ply_stage(source: Path, dest: Path, to_target: np.ndarray, crop: Crop, max_scale: float = 0.2, min_opacity: float = 0.0) -> tuple[int, int]:
+    """Write the Gaussians of a binary INRIA-format .ply that lie in the crop as a ParticleField stage frame_splat reads, return kept and total."""
+    dtype, total, offset, degree = _gaussian_ply_layout(source)
+    rows = np.memmap(source, dtype, "r", offset, (total,))
+    meters = abs(np.linalg.det(to_target[:3, :3])) ** (1 / 3)
+    chunks: list[tuple[np.ndarray, ...]] = []
+    for start in range(0, total, PLY_CHUNK):
+        chunk = rows[start : start + PLY_CHUNK]
+        positions = np.stack([chunk[axis] for axis in "xyz"], axis=1).astype(np.float64)
+        keep = _inside(positions @ to_target[:3, :3].T + to_target[:3, 3], crop.bounding_box)
+        scales = np.exp(np.stack([chunk[f"scale_{axis}"] for axis in range(3)], axis=1).astype(np.float64))
+        keep &= scales.max(1) * meters <= max_scale
+        opacities = 1.0 / (1.0 + np.exp(-chunk["opacity"].astype(np.float64)))
+        keep &= opacities >= min_opacity
+        if not keep.any():
+            continue
+        picked = chunk[keep]
+        orientations = np.stack([picked[f"rot_{axis}"] for axis in range(4)], axis=1).astype(np.float64)
+        orientations /= np.linalg.norm(orientations, axis=1, keepdims=True)
+        chunks.append(
+            (
+                positions[keep].astype(np.float32),
+                scales[keep].astype(np.float32),
+                opacities[keep].astype(np.float32),
+                np.roll(orientations, -1, axis=1).astype(np.float32),
+                _ply_coefficients(picked, degree),
+            )
+        )
+    kept = sum(len(chunk[0]) for chunk in chunks)
+    if not kept:
+        raise SplatError(f"the crop keeps 0 of {total} particles of {source}: check the registration ({crop.frame}), then widen the crop or relax max_scale and min_opacity")
+    positions, scales, opacities, orientations, coefficients = (np.concatenate(parts) for parts in zip(*chunks, strict=True))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    stage = Usd.Stage.CreateNew(str(dest))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+    field = UsdVol.ParticleField3DGaussianSplat.Define(stage, "/World/gauss")
+    field.CreatePositionsAttr(Vt.Vec3fArray.FromNumpy(positions))
+    field.CreateOrientationsAttr(Vt.QuatfArray.FromNumpy(orientations))
+    field.CreateScalesAttr(Vt.Vec3fArray.FromNumpy(scales))
+    field.CreateOpacitiesAttr(Vt.FloatArray.FromNumpy(opacities))
+    field.CreateRadianceSphericalHarmonicsDegreeAttr(degree)
+    field.CreateRadianceSphericalHarmonicsCoefficientsAttr(Vt.Vec3fArray.FromNumpy(coefficients.reshape(-1, 3)))
+    pad = EXTENT_PAD_SCALES * float(scales.max())
+    field.CreateExtentAttr(Vt.Vec3fArray.FromNumpy(np.array([positions.min(0) - pad, positions.max(0) + pad], np.float32)))
+    stage.GetRootLayer().Save()
+    return kept, total
 
 
 def frame_splat(
