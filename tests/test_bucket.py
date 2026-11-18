@@ -22,15 +22,15 @@ def private(store, monkeypatch):
 
 def test_default_url_without_override(monkeypatch):
     monkeypatch.delenv("ARENA_ASSETS_URL", raising=False)
-    assert Bucket("public/models")._object_url("a") == f"{DEFAULT_URL}/public/models/a"
+    assert Bucket("arena-public/models")._object_url("a") == f"{DEFAULT_URL}/arena-public/models/a"
 
 
 def test_url_override_reaches_objects_and_index(store):
-    store.put("public", "models/a/x.obj", b"1")
-    bucket = Bucket("public/models")
-    assert bucket._object_url("a/x.obj") == f"{store.base}/public/models/a/x.obj"
+    store.put("arena-public", "models/a/x.obj", b"1")
+    bucket = Bucket("arena-public/models")
+    assert bucket._object_url("a/x.obj") == f"{store.base}/arena-public/models/a/x.obj"
     bucket.listdir("")
-    assert store.seen("GET", "/public/index.json")
+    assert store.seen("GET", "/arena-public/index.json")
 
 
 def test_object_url_encodes_segments_and_keeps_slashes(store):
@@ -63,62 +63,62 @@ def test_outermost_drops_link_bundles_of_articulated_objects():
     assert outermost(listed) == ["Common/Object/Fridge", "Common/Object/Chair", "Common/Object/Fridge_B"]
 
 
-def test_public_folder_is_stripped_from_names(store):
-    store.put("public", "models/Common/Object/a/annotation.yaml", b"a")
-    store.put("public", "worlds/w1/world.yaml", b"w")
-    models = Bucket("public/models")
+def test_folder_source_strips_its_folder_from_names(store):
+    store.put("arena-public", "models/Common/Object/a/annotation.yaml", b"a")
+    store.put("arena-public", "worlds/w1/world.yaml", b"w")
+    models = Bucket("arena-public/models")
     assert [entry["name"] for entry in models.listdir("")] == ["Common/Object/a/annotation.yaml"]
     assert models.list_assets() == ["Common/Object/a"]
-    assert Bucket("public/worlds").listchildren("") == ["w1"]
+    assert Bucket("arena-public/worlds").listchildren("") == ["w1"]
 
 
 def test_index_is_fetched_once_per_ttl_across_processes(store):
-    store.put("public", "models/a/x.obj", b"1")
-    Bucket("public/models").listdir("a")
-    Bucket("public/models").object_exists("a/x.obj")
-    assert len(store.seen("GET", "/public/index.json")) == 1
+    store.put("arena-public", "models/a/x.obj", b"1")
+    Bucket("arena-public/models").listdir("a")
+    Bucket("arena-public/models").object_exists("a/x.obj")
+    assert len(store.seen("GET", "/arena-public/index.json")) == 1
 
 
 @pytest.mark.parametrize("declared", [None, 1])
 def test_index_of_a_known_format_lists(store, declared):
     store.index_format = declared
-    store.put("public", "models/a/x.obj", b"1")
-    assert [entry["name"] for entry in Bucket("public/models").listdir("")] == ["a/x.obj"]
+    store.put("arena-public", "models/a/x.obj", b"1")
+    assert [entry["name"] for entry in Bucket("arena-public/models").listdir("")] == ["a/x.obj"]
 
 
 def test_index_of_a_newer_format_asks_for_an_update(store):
     store.index_format = 2
-    with pytest.raises(StoreError, match="public/index.json has format 2, arena_assets .* reads format 1 at most: update arena_assets"):
-        Bucket("public/models").listdir("")
+    with pytest.raises(StoreError, match="arena-public/index.json has format 2, arena_assets .* reads format 1 at most: update arena_assets"):
+        Bucket("arena-public/models").listdir("")
 
 
 def test_index_is_requested_gzip_compressed(store):
-    store.put("public", "models/a/x.obj", b"1")
-    assert Bucket("public/models").object_exists("a/x.obj")
-    assert store.seen("GET", "/public/index.json")[0]["Accept-Encoding"] == "gzip"
+    store.put("arena-public", "models/a/x.obj", b"1")
+    assert Bucket("arena-public/models").object_exists("a/x.obj")
+    assert store.seen("GET", "/arena-public/index.json")[0]["Accept-Encoding"] == "gzip"
 
 
 def test_expired_index_revalidates_with_its_etag(store, monkeypatch):
-    store.put("public", "models/a/x.obj", b"1")
-    Bucket("public/models").listdir("a")
+    store.put("arena-public", "models/a/x.obj", b"1")
+    Bucket("arena-public/models").listdir("a")
     monkeypatch.setenv("ARENA_ASSETS_TTL", "0")
-    assert Bucket("public/models").object_exists("a/x.obj")
-    second = store.seen("GET", "/public/index.json")[1]
-    assert second["If-None-Match"] == f'"public-{store.generation}"'
+    assert Bucket("arena-public/models").object_exists("a/x.obj")
+    second = store.seen("GET", "/arena-public/index.json")[1]
+    assert second["If-None-Match"] == f'"arena-public-{store.generation}"'
 
 
 def test_a_miss_revalidates_a_cached_index_once(store):
-    store.put("public", "models/a/x.obj", b"1")
-    Bucket("public/models").listdir("a")
-    store.put("public", "models/b/y.obj", b"2")
-    bucket = Bucket("public/models")
+    store.put("arena-public", "models/a/x.obj", b"1")
+    Bucket("arena-public/models").listdir("a")
+    store.put("arena-public", "models/b/y.obj", b"2")
+    bucket = Bucket("arena-public/models")
     assert bucket.object_exists("b/y.obj")
     assert not bucket.object_exists("c/z.obj")
-    assert len(store.seen("GET", "/public/index.json")) == 2
+    assert len(store.seen("GET", "/arena-public/index.json")) == 2
 
 
 def test_unknown_bucket_names_the_store(store):
-    with pytest.raises(StoreError, match="no bucket 'arena-worlds-prod-public' on .*, known buckets are public, arena-internal"):
+    with pytest.raises(StoreError, match="no bucket 'arena-worlds-prod-public' on .*, known buckets are arena-public, arena-internal"):
         Bucket("arena-worlds-prod-public").listdir("")
 
 
@@ -203,45 +203,45 @@ def test_asset_exists_without_sentinel_takes_a_prefix_or_an_object(private, monk
 
 
 def test_download_resumes_a_partial_file_with_a_range(store, tmp_path):
-    store.put("public", "models/a/x.bin", b"0123456789")
+    store.put("arena-public", "models/a/x.bin", b"0123456789")
     target = tmp_path / "a" / "x.bin"
     target.parent.mkdir()
     (tmp_path / "a" / "x.bin.part").write_bytes(b"0123")
-    assert Bucket("public/models").download("a/x.bin", str(target)) == 6
+    assert Bucket("arena-public/models").download("a/x.bin", str(target)) == 6
     assert target.read_bytes() == b"0123456789"
-    assert store.seen("GET", "/public/models/a/x.bin")[0]["Range"] == "bytes=4-"
+    assert store.seen("GET", "/arena-public/models/a/x.bin")[0]["Range"] == "bytes=4-"
 
 
 def test_download_of_a_complete_partial_file_needs_no_body(store, tmp_path):
-    store.put("public", "models/x.bin", b"0123")
+    store.put("arena-public", "models/x.bin", b"0123")
     (tmp_path / "x.bin.part").write_bytes(b"0123")
-    assert Bucket("public/models").download("x.bin", str(tmp_path / "x.bin")) == 0
+    assert Bucket("arena-public/models").download("x.bin", str(tmp_path / "x.bin")) == 0
     assert (tmp_path / "x.bin").read_bytes() == b"0123"
 
 
 def test_corrupt_partial_file_is_downloaded_again(store, tmp_path):
-    store.put("public", "models/x.bin", b"0123456789")
+    store.put("arena-public", "models/x.bin", b"0123456789")
     (tmp_path / "x.bin.part").write_bytes(b"XXXX")
-    Bucket("public/models").download("x.bin", str(tmp_path / "x.bin"))
+    Bucket("arena-public/models").download("x.bin", str(tmp_path / "x.bin"))
     assert (tmp_path / "x.bin").read_bytes() == b"0123456789"
-    assert [headers.get("Range") for headers in store.seen("GET", "/public/models/x.bin")] == ["bytes=4-", None]
+    assert [headers.get("Range") for headers in store.seen("GET", "/arena-public/models/x.bin")] == ["bytes=4-", None]
 
 
 def test_download_not_matching_the_index_raises_and_keeps_nothing(store, tmp_path):
-    store.put("public", "models/x.bin", b"old")
-    bucket = Bucket("public/models")
+    store.put("arena-public", "models/x.bin", b"old")
+    bucket = Bucket("arena-public/models")
     bucket.objects()
-    store.buckets["public"]["models/x.bin"] = b"new"
+    store.buckets["arena-public"]["models/x.bin"] = b"new"
     with pytest.raises(StoreError, match="does not match"):
         bucket.download("x.bin", str(tmp_path / "x.bin"))
     assert not list(tmp_path.glob("x.bin*"))
 
 
 def test_download_after_a_replacement_refreshes_the_index(store, tmp_path):
-    store.put("public", "models/x.bin", b"old")
-    Bucket("public/models").objects()
-    store.put("public", "models/x.bin", b"new")
-    Bucket("public/models").download("x.bin", str(tmp_path / "x.bin"))
+    store.put("arena-public", "models/x.bin", b"old")
+    Bucket("arena-public/models").objects()
+    store.put("arena-public", "models/x.bin", b"new")
+    Bucket("arena-public/models").download("x.bin", str(tmp_path / "x.bin"))
     assert (tmp_path / "x.bin").read_bytes() == b"new"
 
 
@@ -249,9 +249,9 @@ def test_upload_sends_the_token_and_the_content_hash(store, tmp_path):
     store.tokens["tok"] = "alice"
     source = tmp_path / "x.bin"
     source.write_bytes(b"payload")
-    assert Bucket("public/models", token="tok").upload(str(source), "a/x.bin") == 7
-    assert store.buckets["public"]["models/a/x.bin"] == b"payload"
-    headers = store.seen("PUT", "/public/models/a/x.bin")[0]
+    assert Bucket("arena-public/models", token="tok").upload(str(source), "a/x.bin") == 7
+    assert store.buckets["arena-public"]["models/a/x.bin"] == b"payload"
+    headers = store.seen("PUT", "/arena-public/models/a/x.bin")[0]
     assert headers["Authorization"] == "Bearer tok"
     assert headers["X-Content-SHA256"] == hashlib.sha256(b"payload").hexdigest()
     assert "If-None-Match" not in headers
@@ -259,22 +259,22 @@ def test_upload_sends_the_token_and_the_content_hash(store, tmp_path):
 
 def test_upload_without_overwrite_is_refused_on_an_existing_object(store, tmp_path):
     store.tokens["tok"] = "alice"
-    store.put("public", "models/x.bin", b"theirs")
+    store.put("arena-public", "models/x.bin", b"theirs")
     source = tmp_path / "x.bin"
     source.write_bytes(b"mine")
-    with pytest.raises(StoreError, match="PUT public/models/x.bin: 412 exists, it exists with other content and --no-overwrite keeps it"):
-        Bucket("public/models", token="tok").upload(str(source), "x.bin", overwrite=False)
-    assert store.seen("PUT", "/public/models/x.bin")[0]["If-None-Match"] == "*"
-    assert store.buckets["public"]["models/x.bin"] == b"theirs"
+    with pytest.raises(StoreError, match="PUT arena-public/models/x.bin: 412 exists, it exists with other content and --no-overwrite keeps it"):
+        Bucket("arena-public/models", token="tok").upload(str(source), "x.bin", overwrite=False)
+    assert store.seen("PUT", "/arena-public/models/x.bin")[0]["If-None-Match"] == "*"
+    assert store.buckets["arena-public"]["models/x.bin"] == b"theirs"
 
 
 def test_refused_upload_names_the_owner(store, tmp_path):
     store.tokens["tok"] = "alice"
-    store.owners[("public", "models/x.bin")] = "bob"
+    store.owners[("arena-public", "models/x.bin")] = "bob"
     source = tmp_path / "x.bin"
     source.write_bytes(b"mine")
-    with pytest.raises(StoreError, match="403 public/models/x.bin belongs to bob, .*/_api/whoami shows"):
-        Bucket("public/models", token="tok").upload(str(source), "x.bin")
+    with pytest.raises(StoreError, match="403 arena-public/models/x.bin belongs to bob, .*/_api/whoami shows"):
+        Bucket("arena-public/models", token="tok").upload(str(source), "x.bin")
 
 
 def test_upload_resolves_the_environment_token(store, tmp_path, monkeypatch):
@@ -291,69 +291,92 @@ def test_upload_over_the_size_limit_never_reaches_the_store(store, tmp_path):
     with open(source, "wb") as f:
         f.truncate(MAX_UPLOAD + 1)
     with pytest.raises(StoreError, match="at most"):
-        Bucket("public/models", token="tok").upload(str(source), "huge.bin", sha256="0" * 64)
-    assert not store.seen("PUT", "/public/models/huge.bin")
+        Bucket("arena-public/models", token="tok").upload(str(source), "huge.bin", sha256="0" * 64)
+    assert not store.seen("PUT", "/arena-public/models/huge.bin")
 
 
 def test_a_write_makes_the_next_process_revalidate_the_index(store, tmp_path):
     store.tokens["tok"] = "alice"
-    Bucket("public/models").listdir("")
+    Bucket("arena-public/models").listdir("")
     source = tmp_path / "x.bin"
     source.write_bytes(b"1")
-    Bucket("public/models", token="tok").upload(str(source), "x.bin")
-    assert os.path.getmtime(cache_root() / ".index" / "public.json") < time.time() - 86400
-    assert Bucket("public/models").object_exists("x.bin")
+    Bucket("arena-public/models", token="tok").upload(str(source), "x.bin")
+    assert os.path.getmtime(cache_root() / ".index" / "arena-public.json") < time.time() - 86400
+    assert Bucket("arena-public/models").object_exists("x.bin")
 
 
 def test_delete_removes_an_own_object(store):
     store.tokens["tok"] = "alice"
-    store.put("public", "models/x.bin", b"1")
-    store.owners[("public", "models/x.bin")] = "alice"
-    Bucket("public/models", token="tok").delete("x.bin")
-    assert "models/x.bin" not in store.buckets["public"]
-    assert not Bucket("public/models").object_exists("x.bin")
+    store.put("arena-public", "models/x.bin", b"1")
+    store.owners[("arena-public", "models/x.bin")] = "alice"
+    Bucket("arena-public/models", token="tok").delete("x.bin")
+    assert "models/x.bin" not in store.buckets["arena-public"]
+    assert not Bucket("arena-public/models").object_exists("x.bin")
 
 
 def test_delete_of_another_users_object_is_refused(store):
     store.tokens["tok"] = "alice"
-    store.put("public", "models/x.bin", b"1")
-    store.owners[("public", "models/x.bin")] = "bob"
+    store.put("arena-public", "models/x.bin", b"1")
+    store.owners[("arena-public", "models/x.bin")] = "bob"
     with pytest.raises(StoreError, match="403.*bob"):
+        Bucket("arena-public/models", token="tok").delete("x.bin")
+
+
+def test_legacy_public_source_still_reads_and_warns_once(store, caplog):
+    store.put("public", "worlds/w/world.yaml", b"1")
+    assert Bucket("public/worlds").object_exists("w/world.yaml")
+    Bucket("public/worlds").listdir("w")
+    warnings = [record.getMessage() for record in caplog.records if "deprecated" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "public/worlds is deprecated and read-only: public/worlds/<name> is arena-public/<name>" in warnings[0]
+
+
+def test_legacy_public_source_refuses_writes_before_sending(store, tmp_path):
+    store.tokens["tok"] = "alice"
+    store.put("public", "models/x.bin", b"1")
+    source = tmp_path / "x.bin"
+    source.write_bytes(b"payload")
+    with pytest.raises(StoreError, match="PUT public/models/x.bin: public is read-only, publish to arena-public instead"):
+        Bucket("public/models", token="tok").upload(str(source), "x.bin")
+    with pytest.raises(StoreError, match="DELETE public/models/x.bin: public is read-only"):
         Bucket("public/models", token="tok").delete("x.bin")
+    assert not store.seen("PUT", "/public/models/x.bin")
+    assert not store.seen("DELETE", "/public/models/x.bin")
+    assert store.buckets["public"]["models/x.bin"] == b"1"
 
 
 def test_unreachable_store_says_so_in_one_line(monkeypatch):
     monkeypatch.setenv("ARENA_ASSETS_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("ARENA_ASSETS_DIR", "/nonexistent-cache")
     with pytest.raises(StoreError, match="cannot reach the asset store at http://127.0.0.1:9"):
-        Bucket("public/models").listdir("")
+        Bucket("arena-public/models").listdir("")
 
 
 def test_object_gone_since_the_index_names_it(store, tmp_path):
-    store.put("public", "models/x.bin", b"1")
-    bucket = Bucket("public/models")
+    store.put("arena-public", "models/x.bin", b"1")
+    bucket = Bucket("arena-public/models")
     bucket.objects()
-    del store.buckets["public"]["models/x.bin"]
-    with pytest.raises(StoreError, match="GET public/models/x.bin: 404 no such object") as missing:
+    del store.buckets["arena-public"]["models/x.bin"]
+    with pytest.raises(StoreError, match="GET arena-public/models/x.bin: 404 no such object") as missing:
         bucket.download("x.bin", str(tmp_path / "x.bin"))
     assert missing.value.status == 404
 
 
 def test_browse_shows_folders_with_counts_and_files_at_one_level(store):
-    store.put("public", "models/Common/Object/a/annotation.yaml", b"12")
-    store.put("public", "models/Common/Object/a/a.usdz", b"3456")
-    store.put("public", "models/Common/Object/b/annotation.yaml", b"7")
-    store.put("public", "models/Common/readme.md", b"89")
-    folders, files = Bucket("public/models").browse("Common")
+    store.put("arena-public", "models/Common/Object/a/annotation.yaml", b"12")
+    store.put("arena-public", "models/Common/Object/a/a.usdz", b"3456")
+    store.put("arena-public", "models/Common/Object/b/annotation.yaml", b"7")
+    store.put("arena-public", "models/Common/readme.md", b"89")
+    folders, files = Bucket("arena-public/models").browse("Common")
     assert folders == {"Object": (3, 7)}
     assert [entry["name"] for entry in files] == ["readme.md"]
-    assert Bucket("public/models").browse("Common/Object/") == ({"a": (2, 6), "b": (1, 1)}, [])
+    assert Bucket("arena-public/models").browse("Common/Object/") == ({"a": (2, 6), "b": (1, 1)}, [])
 
 
 def test_browse_of_a_bucket_root_spans_its_folders(store):
-    store.put("public", "models/a.txt", b"1")
-    store.put("public", "worlds/w/world.yaml", b"22")
-    assert Bucket("public").browse() == ({"models": (1, 1), "worlds": (1, 2)}, [])
+    store.put("arena-public", "models/a.txt", b"1")
+    store.put("arena-public", "worlds/w/world.yaml", b"22")
+    assert Bucket("arena-public").browse() == ({"models": (1, 1), "worlds": (1, 2)}, [])
 
 
 def test_under_selects_a_folder_and_never_a_whole_source(store):

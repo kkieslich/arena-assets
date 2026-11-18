@@ -87,7 +87,7 @@ def test_package_version_matches_package_xml_and_pyproject():
 
 
 def test_store_requests_carry_the_agent(store):
-    store.put("public", "models/a/x.obj", b"1")
-    Bucket("public/models").listdir("")
-    assert [headers["User-Agent"] for headers in store.seen("GET", "/public/index.json")] == [user_agent()]
+    store.put("arena-public", "models/a/x.obj", b"1")
+    Bucket("arena-public/models").listdir("")
+    assert [headers["User-Agent"] for headers in store.seen("GET", "/arena-public/index.json")] == [user_agent()]
     assert user_agent().startswith(f"arena_assets/{package_version()}")

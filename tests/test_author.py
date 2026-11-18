@@ -31,10 +31,10 @@ def test_files_land_under_destination(bucket, tmp_path):
     assert bucket.buckets["bkt"] == {"assets/a/annotation.yaml": b"a: 1", "assets/a/model.obj": b"obj-data"}
 
 
-def test_public_folder_source_lands_in_its_folder(bucket, tmp_path):
+def test_folder_source_upload_lands_in_its_folder(bucket, tmp_path):
     make_database(tmp_path, {"w1/world.yaml": b"w"})
-    author_database("public/worlds", str(tmp_path))
-    assert bucket.buckets["public"] == {"worlds/w1/world.yaml": b"w"}
+    author_database("arena-public/worlds", str(tmp_path))
+    assert bucket.buckets["arena-public"] == {"worlds/w1/world.yaml": b"w"}
 
 
 def test_no_destination_uploads_to_root(bucket, tmp_path):

@@ -23,7 +23,7 @@ def add_to_cmd(cmd: typer.Typer):
     @net_app.callback()
     def net_callback(
         ctx: typer.Context,
-        source: str = typer.Argument(help="Asset store source, <bucket>[/<folder>] such as public/models or arena-internal, `default` for public/models"),
+        source: str = typer.Argument(help="Asset store source, <bucket>[/<folder>] such as arena-public or arena-internal, `default` for arena-public"),
     ):
         """Network operations with specified source."""
         if ctx:

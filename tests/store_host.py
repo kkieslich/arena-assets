@@ -9,7 +9,7 @@ import urllib.parse
 class Store(http.server.ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), StoreHandler)
-        self.buckets: dict[str, dict[str, bytes]] = {"public": {}}
+        self.buckets: dict[str, dict[str, bytes]] = {"arena-public": {}}
         self.private: set[str] = set()
         self.tokens: dict[str, str] = {}
         self.owners: dict[tuple[str, str], str] = {}

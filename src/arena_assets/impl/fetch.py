@@ -24,8 +24,9 @@ from arena_assets.impl import ANNOTATION_NAME
 from arena_assets.utils.logging import format_file_size, get_logger, get_manager
 
 DEFAULT_URL = "https://storage.arena-rosnav.org"
-DEFAULT_SOURCE = "public/models"
-BUCKETS = ("public", "arena-internal")
+DEFAULT_SOURCE = "arena-public"
+BUCKETS = ("arena-public", "arena-internal")
+LEGACY_BUCKET = "public"
 INDEX_FORMAT = 1
 MAX_UPLOAD = 4 << 30
 TOKEN_HINT = "set ARENA_ASSETS_TOKEN or log in with 'gcloud auth login'"
@@ -89,6 +90,11 @@ def _agent(version: str, root: Path) -> str:
     revision = _git_revision(root) or _release_revision(root)
     local = f"+{revision}" if revision else ""
     return f"arena_assets/{version}{local} Python-urllib/{sys.version_info.major}.{sys.version_info.minor}"
+
+
+@functools.cache
+def _warn_legacy(source: str) -> None:
+    get_logger("fetch").warning("%s is deprecated and read-only: %s/<name> is arena-public/<name>, set ARENA_BUCKETS instead of public/* sources", source, source)
 
 
 @functools.cache
@@ -175,6 +181,8 @@ class Bucket:
         self._base = store_url()
         self.bucket, _, folder = source.strip("/").partition("/")
         self._folder = _under(folder)
+        if self.bucket == LEGACY_BUCKET:
+            _warn_legacy(self.name)
         self._index: dict[str, dict] | None = None
         self._revalidated = False
         self._lock = threading.Lock()
@@ -247,6 +255,8 @@ class Bucket:
 
     def _send(self, url: str, **kwargs: typing.Any) -> http.client.HTTPResponse:
         """A write: authenticated from the start, a refusal raised with the store's reason."""
+        if self.bucket == LEGACY_BUCKET:
+            raise StoreError(f"{self._what(url, kwargs['method'])}: {LEGACY_BUCKET} is read-only, publish to arena-public instead")
         token = self._token()
         try:
             return self._urlopen(url, token, **kwargs)

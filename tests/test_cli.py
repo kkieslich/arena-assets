@@ -97,9 +97,9 @@ def test_db_query_scores(database_path):
         float(score)
 
 
-def test_net_default_lists_the_public_models(store):
-    store.put("public", "models/Common/Object/a/annotation.yaml", b"a")
-    store.put("public", "worlds/w1/world.yaml", b"w")
+def test_net_default_lists_the_arena_public_models(store):
+    store.put("arena-public", "Common/Object/a/annotation.yaml", b"a")
+    store.put("arena-public", "w1/world.yaml", b"w")
     result = runner.invoke(app, ["-s", "net", "default", "list"])
     assert result.exit_code == 0, result.output
     assert result.stdout.split() == ["Common/Object/a"]
@@ -127,8 +127,8 @@ def test_net_delete_recursive_removes_a_folder_and_lists_what_went(store, monkey
 
 
 def test_net_browse_prints_folders_then_files(store):
-    store.put("public", "models/Common/Object/a/annotation.yaml", b"a")
-    store.put("public", "models/Common/readme.md", b"r")
+    store.put("arena-public", "Common/Object/a/annotation.yaml", b"a")
+    store.put("arena-public", "Common/readme.md", b"r")
     result = runner.invoke(app, ["-s", "net", "default", "browse", "Common"])
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
@@ -137,10 +137,10 @@ def test_net_browse_prints_folders_then_files(store):
 
 
 def test_net_browse_json(store):
-    store.put("public", "worlds/w1/world.yaml", b"ww")
-    result = runner.invoke(app, ["-s", "net", "public", "browse", "worlds", "--json"])
+    store.put("arena-public", "worlds/w1/world.yaml", b"ww")
+    result = runner.invoke(app, ["-s", "net", "arena-public", "browse", "worlds", "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == {"source": "public", "path": "worlds", "folders": [{"name": "w1", "files": 1, "bytes": 2}], "files": []}
+    assert json.loads(result.stdout) == {"source": "arena-public", "path": "worlds", "folders": [{"name": "w1", "files": 1, "bytes": 2}], "files": []}
 
 
 def test_net_author_prints_what_it_sent_and_skipped(store, monkeypatch, tmp_path):
