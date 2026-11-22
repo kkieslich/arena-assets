@@ -56,6 +56,14 @@ def test_bare_import_lists_the_registry():
     assert gso.split()[2:5] == ["yes", "fuel", "item"]
 
 
+def test_a_param_the_importer_does_not_take_is_refused_with_the_ones_it_takes(tmp_path):
+    seed(tmp_path / "cache")
+    result = runner.invoke(app, ["import", "object", "gso", ITEM, "--cache", str(tmp_path / "cache"), "--out", str(tmp_path / "out"), "--param", "bogus=1"])
+    assert result.exit_code == 2
+    assert "'bogus=1' is not NAME=VALUE with a NAME of" in plain(result.output)
+    assert not (tmp_path / "out").exists()
+
+
 def test_bare_import_json():
     result = runner.invoke(app, ["import", "--json"])
     assert result.exit_code == 0

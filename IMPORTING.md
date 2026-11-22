@@ -14,9 +14,9 @@ arena asset import world barn --all                  # every item of a source
 arena asset import object gso <item> --out ./gso     # another target root
 ```
 
-Over MCP, the `assets` domain offers the same: `assets_import_sources` lists the datasets, `assets_import_items` one dataset's item ids (with a glob and a limit), and `assets_import` converts chosen items as a job whose result lists the item paths. `--json` prints either listing as JSON.
+Over MCP, the `assets` domain offers the same: `assets_import_sources` lists the datasets, `assets_import_items` one dataset's item ids (with a glob and a limit), and `assets_import` converts chosen items, with `params` for the importer's settings, as a job whose result lists the item paths. `--json` prints either listing as JSON.
 
-`arena asset import` is the Arena CLI front of `arena-assets import KIND SOURCE ITEM... [-o OUT]`, which works the same outside Arena. Tab completion of `arena asset import KIND SOURCE` offers the source's item ids.
+`arena asset import` is the Arena CLI front of `arena-assets import KIND SOURCE ITEM... [-o OUT] [--param NAME=VALUE...]`, which works the same outside Arena. `--param` hands a source's importer its own settings, and a NAME it does not take is refused with the ones it does. Tab completion of `arena asset import KIND SOURCE` offers the source's item ids.
 
 ## How an import works
 
@@ -166,7 +166,7 @@ Sound sources stage each clip as a manifest beside its unchanged wav and build i
 
 ### musohu
 
-[MuSoHu](https://dataverse.orc.gmu.edu/) rosbag1 human navigation runs from the GMU Dataverse under CC0. The item id is the bag name (`import episode musohu <bag>`), and the run becomes `<bag>/episodes/episode_000`, a reference episode of the robot model `human` in the evaluation recorder's layout: scan, odom and cmd_vel on the recorder's topics, every other topic with a ROS 2 type under the robot namespace. A bag missing a needed topic is refused before download. The item list is fetched again after 24 h. See [ingestion/README.md](../arena_evaluation/arena_evaluation/arena_evaluation/ingestion/README.md#files).
+[MuSoHu](https://dataverse.orc.gmu.edu/) rosbag1 human navigation runs from the GMU Dataverse under CC0. The item id is the bag name (`import episode musohu <bag>`), and the run becomes `<bag>/episodes/episode_000`, a reference episode of the robot model `human` in the evaluation recorder's layout: the demonstrator's footprint radius and mass, given as `--param radius_m=<m> --param mass_kg=<kg>` and refused when missing, as the `robot_radius` and `robot_mass_kg` of its fleet message, scan, odom and cmd_vel on the recorder's topics, every other topic with a ROS 2 type under the robot namespace. A bag missing a needed topic is refused before download. The item list is fetched again after 24 h. See [ingestion/README.md](../arena_evaluation/arena_evaluation/arena_evaluation/ingestion/README.md#files).
 
 ## Adding a source
 

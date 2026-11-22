@@ -1,5 +1,7 @@
+import inspect
 import json
 import tempfile
+import typing
 from pathlib import Path
 
 import typer
@@ -52,6 +54,17 @@ def _fail(message: str) -> typer.Exit:
     return typer.Exit(1)
 
 
+def _params(pairs: list[str], importer: type) -> dict[str, typing.Any]:
+    accepted = [name for name in inspect.signature(importer).parameters if name not in ("cache", "provider")]
+    params: dict[str, typing.Any] = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or name not in accepted:
+            raise typer.BadParameter(f"'{pair}' is not NAME=VALUE with a NAME of {importer.__name__}: {', '.join(accepted) or 'none'}", param_hint="--param")
+        params[name] = value
+    return params
+
+
 def _elsewhere(source: str) -> str:
     from arena_assets.importers import IMPORTERS
 
@@ -68,6 +81,7 @@ def import_command(
     out: Path | None = typer.Option(None, "--out", "-o", help="Target root, default the imported root the resolvers read (shown by a bare import KIND SOURCE)"),
     cache: Path | None = typer.Option(None, "--cache", help="Download cache, default $ARENA_ASSETS_DIR/.import/SOURCE, else under the system temp dir"),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable source or item listing", is_flag=True),
+    param: list[str] = typer.Option([], "--param", help="NAME=VALUE passed to the source's importer, repeatable, a bad NAME lists the ones it takes"),
 ):
     """Import items of one kind from an upstream dataset into the asset layout the resolvers read.
 
@@ -95,7 +109,7 @@ def import_command(
         raise typer.BadParameter("pass item ids or --all, not both", param_hint="ITEMS")
 
     importer_class = IMPORTERS.load(kind, source)
-    importer = importer_class(cache=cache if cache is not None else _default_cache(source))
+    importer = importer_class(cache=cache if cache is not None else _default_cache(source), **_params(param, importer_class))
 
     if not items and not all_:
         try:
