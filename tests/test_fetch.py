@@ -23,10 +23,10 @@ def test_files_land_under_destination(bucket, tmp_path):
     assert (tmp_path / "assets/a/model.obj").read_bytes() == b"obj-data"
 
 
-def test_public_folder_source_lands_without_the_folder(store, tmp_path):
+def test_folder_source_download_lands_without_the_folder(store, tmp_path):
     initialize(silent=True)
-    store.put("public", "worlds/w1/world.yaml", b"w")
-    fetch_database("public/worlds", ["w1"], str(tmp_path))
+    store.put("arena-public", "worlds/w1/world.yaml", b"w")
+    fetch_database("arena-public/worlds", ["w1"], str(tmp_path))
     assert (tmp_path / "w1/world.yaml").read_bytes() == b"w"
 
 

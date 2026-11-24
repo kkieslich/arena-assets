@@ -9,6 +9,8 @@ class Host(http.server.ThreadingHTTPServer):
         self.statuses: dict[str, int] = {}
         self.served: list[str] = []
         self.authorizations: dict[str, str | None] = {}
+        self.agents: dict[str, str | None] = {}
+        self.posted: dict[str, bytes] = {}
 
     @property
     def base(self) -> str:
@@ -21,6 +23,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.server.served.append(self.path)
         self.server.authorizations[self.path] = self.headers.get("Authorization")
+        self.server.agents[self.path] = self.headers.get("User-Agent")
         if self.path in self.server.statuses:
             self.send_error(self.server.statuses[self.path])
             return
@@ -38,6 +41,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        self.server.posted[self.path] = self.rfile.read(int(self.headers["Content-Length"]))
+        self.do_GET()
 
     def log_message(self, format: str, *args: object):
         pass

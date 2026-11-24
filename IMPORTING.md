@@ -14,9 +14,9 @@ arena asset import world barn --all                  # every item of a source
 arena asset import object gso <item> --out ./gso     # another target root
 ```
 
-Over MCP, the `assets` domain offers the same: `assets_import_sources` lists the datasets, `assets_import_items` one dataset's item ids (with a glob and a limit), and `assets_import` converts chosen items as a job whose result lists the item paths. `--json` prints either listing as JSON.
+Over MCP, the `assets` domain offers the same: `assets_import_sources` lists the datasets, `assets_import_items` one dataset's item ids (with a glob and a limit), and `assets_import` converts chosen items, with `params` for the importer's settings, as a job whose result lists the item paths. `--json` prints either listing as JSON.
 
-`arena asset import` is the Arena CLI front of `arena-assets import KIND SOURCE ITEM... [-o OUT]`, which works the same outside Arena. Tab completion of `arena asset import KIND SOURCE` offers the source's item ids.
+`arena asset import` is the Arena CLI front of `arena-assets import KIND SOURCE ITEM... [-o OUT] [--param NAME=VALUE...]`, which works the same outside Arena. `--param` hands a source's importer its own settings, and a NAME it does not take is refused with the ones it does. Tab completion of `arena asset import KIND SOURCE` offers the source's item ids.
 
 ## How an import works
 
@@ -136,19 +136,19 @@ The [Eindhoven GLOW 2019](https://zenodo.org/records/7007358) crowd recording un
 
 ## Benchmark suites
 
-Suite sources write a suite bundle with its worlds, a contest and a report manifest into the imported root, where they resolve ahead of the shipped ones. See [configs/benchmark/README.md](../arena_evaluation/arena_evaluation/configs/benchmark/README.md) for the stages, contestant rules and metrics.
+Suite sources write a suite bundle with its worlds, a contest and a report manifest into the imported root, where they resolve ahead of the shipped ones. See [configs/README.md](../arena_evaluation/arena_evaluation/configs/README.md) for the stages, contestant rules and metrics.
 
 ### barn
 
-The [BARN challenge](https://github.com/Daffan/the-barn-challenge) as one item (`import suite barn barn`): `suites/barn` with one stage per world and the 300 worlds bundled, `contests/barn` with the challenge episode rules, and `manifests/barn`, which tabulates the `barn_score` the challenge's `run.py` computes. Under MIT. See [BARN](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#barn).
+The [BARN challenge](https://github.com/Daffan/the-barn-challenge) as one item (`import suite barn barn`): `suites/barn` with one stage per world and the 300 worlds bundled, `contests/barn` with the challenge episode rules, and `manifests/barn`, which tabulates the `barn_score` the challenge's `run.py` computes. Under MIT. See [BARN](../arena_evaluation/arena_evaluation/configs/README.md#barn).
 
 ### socnavbench
 
-[SocNavBench](https://github.com/CMU-TBD/SocNavBench) as one item (`import suite socnavbench socnavbench`): `suites/socnavbench` with one jackal stage per curated [socnavbench episode](#socnavbench) and its time budget, the two scene worlds bundled, `contests/socnavbench` with SocNavBench's 0.3 m goal margin, and `manifests/socnavbench`. See [SocNavBench](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#socnavbench). The verdict is `unclear`, as for the scenarios.
+[SocNavBench](https://github.com/CMU-TBD/SocNavBench) as one item (`import suite socnavbench socnavbench`): `suites/socnavbench` with one jackal stage per curated [socnavbench episode](#socnavbench) and its time budget, the two scene worlds bundled, `contests/socnavbench` with SocNavBench's 0.3 m goal margin, and `manifests/socnavbench`. See [SocNavBench](../arena_evaluation/arena_evaluation/configs/README.md#socnavbench). The verdict is `unclear`, as for the scenarios.
 
 ### sidewalkbench
 
-[SidewalkBench](https://github.com/VAIL-UCLA/SidewalkBench) (Liu, He, Alumootil, Pandya, Squicciarini, Wu, Zhou, CoRL 2026) as one item (`import suite sidewalkbench sidewalkbench`): `suites/sidewalkbench` with jackal stages under `robots: scenario` and `obstacles: scenario`, the unit tests on generated `sidewalk` worlds (`straight`, `corner`, `crosswalk`, seeds 42 to 46) and on the `straight_<i>`, `curve_<i>` and `crosswalk_<i>` routes of every scanned scene, one pedestrian-reactive stage per behavior, and the long-horizon stages on the generated `block` world and the scanned `long_<i>` routes, every stage with a budget from its route length at 0.5 m/s. The generated worlds are built at import and bundled under `worlds/`, the scanned scenes come through the [sidewalkbench](#sidewalkbench) world source. `contests/sidewalkbench` pins a nav2 `dwb` contestant that ends an episode on collision, and `manifests/sidewalkbench` tabulates the `sidewalk_*` metrics (route completion per layout, success per behavior, failures per 100 m and mean speed per contestant). Code under Apache 2.0, scenes under MIT. See [SidewalkBench](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#sidewalkbench).
+[SidewalkBench](https://github.com/VAIL-UCLA/SidewalkBench) (Liu, He, Alumootil, Pandya, Squicciarini, Wu, Zhou, CoRL 2026) as one item (`import suite sidewalkbench sidewalkbench`): `suites/sidewalkbench` with jackal stages under `robots: scenario` and `obstacles: scenario`, the unit tests on generated `sidewalk` worlds (`straight`, `corner`, `crosswalk`, seeds 42 to 46) and on the `straight_<i>`, `curve_<i>` and `crosswalk_<i>` routes of every scanned scene, one pedestrian-reactive stage per behavior, and the long-horizon stages on the generated `block` world and the scanned `long_<i>` routes, every stage with a budget from its route length at 0.5 m/s. The generated worlds are built at import and bundled under `worlds/`, the scanned scenes come through the [sidewalkbench](#sidewalkbench) world source. `contests/sidewalkbench` pins a nav2 `dwb` contestant that ends an episode on collision, and `manifests/sidewalkbench` tabulates the `sidewalk_*` metrics (route completion per layout, success per behavior, failures per 100 m and mean speed per contestant). Code under Apache 2.0, scenes under MIT. See [SidewalkBench](../arena_evaluation/arena_evaluation/configs/README.md#sidewalkbench).
 
 ## Sounds
 
@@ -166,7 +166,7 @@ Sound sources stage each clip as a manifest beside its unchanged wav and build i
 
 ### musohu
 
-[MuSoHu](https://dataverse.orc.gmu.edu/) rosbag1 human navigation runs from the GMU Dataverse under CC0. The item id is the bag name (`import episode musohu <bag>`), and the run becomes `<bag>/episodes/episode_000`, a reference episode of the robot model `human` in the evaluation recorder's layout: scan, odom and cmd_vel on the recorder's topics, every other topic with a ROS 2 type under the robot namespace. A bag missing a needed topic is refused before download. The item list is fetched again after 24 h. See [ingestion/README.md](../arena_evaluation/arena_evaluation/arena_evaluation/ingestion/README.md#files).
+[MuSoHu](https://dataverse.orc.gmu.edu/) rosbag1 human navigation runs from the GMU Dataverse under CC0. The item id is the bag name (`import episode musohu <bag>`), and the run becomes `<bag>/episodes/episode_000`, a reference episode of the robot model `human` in the evaluation recorder's layout: the demonstrator's footprint radius and mass, given as `--param radius_m=<m> --param mass_kg=<kg>` and refused when missing, as the `robot_radius` and `robot_mass_kg` of its fleet message, scan, odom and cmd_vel on the recorder's topics, every other topic with a ROS 2 type under the robot namespace. A bag missing a needed topic is refused before download. The item list is fetched again after 24 h. See [ingestion/README.md](../arena_evaluation/arena_evaluation/arena_evaluation/ingestion/README.md#files).
 
 ## Adding a source
 

@@ -9,12 +9,13 @@ import urllib.parse
 class Store(http.server.ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), StoreHandler)
-        self.buckets: dict[str, dict[str, bytes]] = {"public": {}}
+        self.buckets: dict[str, dict[str, bytes]] = {"arena-public": {}}
         self.private: set[str] = set()
         self.tokens: dict[str, str] = {}
         self.owners: dict[tuple[str, str], str] = {}
         self.failing: set[str] = set()
         self.generation = 0
+        self.index_format: int | None = None
         self.requests: list[tuple[str, str, email.message.Message]] = []
 
     @property
@@ -27,7 +28,7 @@ class Store(http.server.ThreadingHTTPServer):
 
     def index(self, bucket: str) -> bytes:
         objects = [{"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "updated": "2026-11-03T00:00:00Z"} for name, data in sorted(self.buckets[bucket].items())]
-        return json.dumps({"bucket": bucket, "generated": "2026-11-03T00:00:00Z", "objects": objects}).encode()
+        return json.dumps({"bucket": bucket, "generated": "2026-11-03T00:00:00Z", **({"format": self.index_format} if self.index_format is not None else {}), "objects": objects}).encode()
 
     def seen(self, method: str, path: str) -> list[email.message.Message]:
         return [headers for m, p, headers in self.requests if m == method and p == path]

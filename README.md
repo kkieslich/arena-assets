@@ -31,7 +31,7 @@ The repository is also an `ament_python` ROS package: in the Arena workspace it 
 arena-assets net default list
 
 # walk a source by folders: object count and size below each folder, then the files
-arena-assets net public/models browse Common/Object
+arena-assets net arena-public browse Common/Object
 
 # download assets into a local directory
 arena-assets net default fetch -o ./models Common/Material/ABS_Hard_Leather
@@ -40,7 +40,7 @@ arena-assets net default fetch -o ./models Common/Material/ABS_Hard_Leather
 arena-assets net default fetch -o ./models --format usdz --no-annotation
 ```
 
-Every source lives on the asset store at `ARENA_ASSETS_URL` (default `https://storage.arena-rosnav.org`) and is named `<bucket>[/<folder>]`: `public/models`, `public/worlds` and `public/benchmarks` are folders of the anonymous `public` bucket, `arena-internal` needs a token, and `default` stands for `public/models`. Listing and existence checks read the bucket's `index.json` (object names, sizes, sha256) once per `ARENA_MODELS_TTL` seconds into `$ARENA_ASSETS_DIR/.index/` (`$ARENA_DATA_DIR/assets` when unset, an error with neither set), revalidate it by ETag after that, and once more when a name is missing. Downloads resume a partial `<file>.part` with a range request, are checked against the index sha256, and skip local files whose size and sha256 already match. A listed object the store answers with 404 is skipped with a warning, since the index can briefly list objects already gone. Every `net` verb reports a failure as one `error:` line on stderr and exits 1: no token (with how to get one), a refused token, a 403 naming the owner, a refused overwrite, an unreachable store. `arena test` and CI point `ARENA_ASSETS_URL` at a dead loopback port, so test suites never reach the store.
+Every source lives on the asset store at `ARENA_ASSETS_URL` (default `https://storage.arena-rosnav.org`) and is a bucket name: `arena-public` is the anonymous bucket with a flat layout (models at `<domain>/<Type>/<name>`, worlds at `<name>`, benchmark configs at `suites|contests|manifests/<name>`), `arena-internal` needs a token, and `default` stands for `arena-public`. The `public` bucket (folders `public/models`, `public/worlds`, `public/benchmarks`) is deprecated: it is still read with a one-time warning per source and every write to it is refused. Every kind takes its sources from `ARENA_BUCKETS` (comma list, default `arena-public`), preceded by the per-family entries `ASSET_BUCKETS`, `WORLD_BUCKETS` and `BENCHMARK_BUCKETS` with duplicates dropped, and `ARENA_BUCKETS=,` without family entries turns network sources off. A source downloads into `$ARENA_ASSETS_DIR/<source>/`, and a push goes to a kind's first source unless `--bucket` names another. A world cannot share a name with a model domain folder (Casper, Common, Hospital, Office, Residential, Warehouse) or a benchmark folder (suites, contests, manifests). Every store request, the gcloud token refresh and every upstream request of an importer send the User-Agent `arena_assets/<version>+g<commit>[.dirty] Python-urllib/<python>`, the commit read from the checkout's git or, in a fork without one, from the fork's `release.json`, and the version alone with neither. Listing and existence checks read the bucket's `index.json` (object names, sizes, sha256) once per `ARENA_ASSETS_TTL` seconds (default 86400) into `$ARENA_ASSETS_DIR/.index/` (`$ARENA_DATA_DIR/assets` when unset, an error with neither set), revalidate it by ETag after that, and once more when a name is missing. An index whose `format` is newer than the client's (1, the default when it has none) fails with a request to update arena_assets. Downloads resume a partial `<file>.part` with a range request, are checked against the index sha256, and skip local files whose size and sha256 already match. A listed object the store answers with 404 is skipped with a warning, since the index can briefly list objects already gone. Every `net` verb reports a failure as one `error:` line on stderr and exits 1: no token (with how to get one), a refused token, a 403 naming the owner, a refused overwrite, an unreachable store. `arena test` and CI point `ARENA_ASSETS_URL` at a dead loopback port, so test suites never reach the store.
 
 ### Build a database
 
@@ -158,15 +158,15 @@ Each import converts items of an upstream dataset (objects, materials, worlds, s
 
 ### Private buckets
 
-Reads are anonymous until the store refuses them with a 401 or 403, then they retry with a bearer token from the `ARENA_ASSETS_TOKEN` environment variable or `gcloud auth print-access-token`, in that order. The store accepts tokens of the gcloud CLI client only. `GET <ARENA_ASSETS_URL>/_api/whoami` with the token shows what it may read and write. The `public` bucket never needs a token.
+Reads are anonymous until the store refuses them with a 401 or 403, then they retry with a bearer token from the `ARENA_ASSETS_TOKEN` environment variable, `gcloud auth print-access-token`, or, without a working gcloud CLI, a token refreshed from the active account's login in the gcloud config directory (`$CLOUDSDK_CONFIG`, default `~/.config/gcloud`), in that order. The store accepts tokens of the gcloud CLI client only. `GET <ARENA_ASSETS_URL>/_api/whoami` with the token shows what it may read and write. The `arena-public` bucket never needs a token, and private access is `ARENA_BUCKETS=arena-public,arena-internal` in `$ARENA_WS_DIR/.env`.
 
 ### Upload a built database
 
 ```sh
-arena-assets net public/models author ./models -d Common
+arena-assets net arena-public author ./models -d Common
 ```
 
-Files whose sha256 the index already lists under the same name are skipped, everything else is sent with `PUT` and its `X-Content-SHA256`. The last stdout line is a JSON summary, `{"files", "sent", "skipped", "bytes"}`. Existing objects with other content are replaced, `--no-overwrite` makes the store refuse them instead. The store takes files up to 4 GiB and the upload checks every file before it sends the first. Uploading requires write access: a token is taken from `--token`, the `ARENA_ASSETS_TOKEN` environment variable, or `gcloud auth print-access-token`, in that order. A refusal prints the store's reason, which names the object's owner.
+Files whose sha256 the index already lists under the same name are skipped, everything else is sent with `PUT` and its `X-Content-SHA256`. The last stdout line is a JSON summary, `{"files", "sent", "skipped", "bytes"}`. Existing objects with other content are replaced, `--no-overwrite` makes the store refuse them instead. The store takes files up to 4 GiB and the upload checks every file before it sends the first. Uploading requires write access: a token is taken from `--token`, then as for reads. A refusal prints the store's reason, which names the object's owner.
 
 ### Delete objects
 
